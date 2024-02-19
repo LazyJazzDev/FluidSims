@@ -1,5 +1,8 @@
+#include "gui/gui.h"
 #include "iostream"
 
 int main() {
-  std::cout << "Hello, World!" << std::endl;
+  GUIApp::AppSettings settings;
+  GUIApp app(settings);
+  app.Run();
 }
