@@ -2,8 +2,12 @@
 
 #include "random"
 
-GUIApp::GUIApp(const AppSettings &settings, const SimSettings &sim_settings)
-    : Application(settings), sim_settings_(sim_settings) {
+GUIApp::GUIApp(const AppSettings &settings,
+               const GUISettings &gui_settings,
+               const SimSettings &sim_settings)
+    : Application(settings),
+      gui_settings_(gui_settings),
+      sim_settings_(sim_settings) {
   scene_ = Renderer()->CreateScene();
   auto extent = VkCore()->SwapChain()->Extent();
   film_ = Renderer()->CreateFilm(extent.width, extent.height);
@@ -40,7 +44,7 @@ void GUIApp::OnInit() {
 
   color_particle_group_->SetGlobalSettings(
       GameX::Graphics::ColorParticleGroup::GlobalSettings{
-          sim_settings_.particle_radius});
+          gui_settings_.particle_radius});
 
   entity_ = scene_->CreateEntity(container_model_.get());
 
@@ -50,19 +54,18 @@ void GUIApp::OnInit() {
   camera_controller_ =
       std::make_unique<CameraControllerThirdPerson>(camera_.get(), aspect);
   camera_controller_->SetCenter(glm::vec3{0.5f, 0.5f, 0.5f});
-  camera_controller_->SetDistance(3.0f);
+  camera_controller_->SetDistance(camera_distance_);
 
-  instance_ = CreateFluidLogicInstance(glm::ivec3{sim_settings_.grid_size});
+  instance_ = CreateFluidLogicInstance(sim_settings_);
 
   std::vector<glm::vec3> positions;
-  float cell_size = 1.0f / sim_settings_.grid_size;
-  float cell_volume = cell_size * cell_size * cell_size;
 
-  for (int x = 0; x < sim_settings_.grid_size * 2; x++) {
-    for (int y = 0; y < sim_settings_.grid_size * 2; y++) {
-      for (int z = 0; z < sim_settings_.grid_size * 2; z++) {
-        glm::vec3 p = (glm::vec3{x, y, z} + 0.5f) * cell_size * 0.5f;
-        if (sim_settings_.initial_particle_range(p)) {
+  for (int x = 0; x < sim_settings_.grid_size.x * 2; x++) {
+    for (int y = 0; y < sim_settings_.grid_size.y * 2; y++) {
+      for (int z = 0; z < sim_settings_.grid_size.z * 2; z++) {
+        glm::vec3 p =
+            (glm::vec3{x, y, z} + 0.5f) * sim_settings_.delta_x * 0.5f;
+        if (gui_settings_.initial_particle_range(p)) {
           positions.push_back(p);
         }
       }
@@ -129,4 +132,12 @@ void GUIApp::CursorPosCallback(double xpos, double ypos) {
   }
 
   ignore_next_mouse_move_ = false;
+}
+
+void GUIApp::ScrollCallback(double xoffset, double yoffset) {
+  camera_distance_ *= std::pow(0.9f, yoffset);
+  camera_distance_ = std::max(1.0f, std::min(camera_distance_, 10.0f));
+  camera_controller_->StoreCurrentState();
+  camera_controller_->SetInterpolationFactor();
+  camera_controller_->SetDistance(camera_distance_);
 }

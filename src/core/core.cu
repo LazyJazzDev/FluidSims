@@ -1,17 +1,27 @@
-#include "core.cuh"
+#include <utility>
 
-FluidInterface *CreateFluidLogicInstance(const glm::ivec3 &grid_size) {
-  return new FluidCore(grid_size);
+#include "core/core.cuh"
+#include "core/device_clock.cuh"
+
+FluidInterface *CreateFluidLogicInstance(const SimSettings &sim_settings) {
+  return new FluidCore(sim_settings);
 }
 
-FluidCore::FluidCore(const glm::ivec3 &grid_size) : grid_size_(grid_size) {
-  grid_center_header_.spacing = glm::vec3(1.0f) / glm::vec3(grid_size);
-  grid_center_header_.size = grid_size;
-  grid_center_header_.origin = 0.5f * grid_center_header_.spacing;
-  grid_point_header_.spacing = glm::vec3(1.0f) / glm::vec3(grid_size - 1);
-  grid_point_header_.size = grid_size + 1;
+FluidCore::FluidCore(SimSettings sim_settings)
+    : sim_settings_(std::move(sim_settings)) {
+  grid_cell_header_.delta_x = sim_settings_.delta_x;
+  grid_cell_header_.origin = glm::vec3{0.0f};
+  grid_cell_header_.size = sim_settings_.grid_size;
+  grid_center_header_.delta_x = sim_settings_.delta_x;
+  grid_center_header_.size = sim_settings_.grid_size;
+  grid_center_header_.origin = glm::vec3{0.5f * grid_center_header_.delta_x};
+  grid_point_header_ = grid_cell_header_;
+  grid_point_header_.size += 1;
 
   pressure_ = Grid<float>(grid_center_header_);
+  level_set_ = Grid<float>(grid_center_header_);
+  velocity_ = MACGrid<float>(grid_cell_header_);
+  mass_sample_ = MACGrid<float>(grid_cell_header_);
 }
 
 __global__ void SetParticlesKernel(Particle *particles,
@@ -68,9 +78,22 @@ __global__ void ApplyGravityKernel(Particle *particles,
 }
 
 void FluidCore::Update(float delta_time) {
+  DeviceClock device_clock;
+
+  pressure_.Clear();
+  level_set_.Clear(-1.0f);
+  velocity_.Clear();
+  mass_sample_.Clear();
+  device_clock.Record("Clear");
+
   AdvectionKernel<<<CALL_SHAPE(particles_.size())>>>(
       particles_.data().get(), particles_.size(), delta_time);
+  device_clock.Record("Advection");
+
   ApplyGravityKernel<<<CALL_SHAPE(particles_.size())>>>(
       particles_.data().get(), particles_.size(), delta_time,
-      glm::vec3(0.0f, -9.8f, 0.0f));
+      glm::vec3{0.0f, -9.8f, 0.0f});
+  device_clock.Record("Apply Gravity");
+
+  device_clock.Finish();
 }

@@ -5,10 +5,8 @@
 #include "gui/camera_third_person.h"
 #include "gui/frame_counter.h"
 
-struct SimSettings {
-  float delta_t{1e-3f};
+struct GUISettings {
   float particle_radius{0.01f};
-  int grid_size{32};
   std::function<bool(const glm::vec3 &)> initial_particle_range =
       [](const glm::vec3 &p) {
         return glm::length(p - glm::vec3{0.3, 0.5f, 0.3f}) < 0.2f;
@@ -18,7 +16,9 @@ struct SimSettings {
 class GUIApp : public GameX::Base::Application {
  public:
   typedef GameX::Base::ApplicationSettings AppSettings;
-  GUIApp(const AppSettings &settings, const SimSettings &sim_settings = {});
+  GUIApp(const AppSettings &settings,
+         const GUISettings &gui_settings = {},
+         const SimSettings &sim_settings = {});
   ~GUIApp();
 
  private:
@@ -29,6 +29,9 @@ class GUIApp : public GameX::Base::Application {
 
   void CursorPosCallback(double xpos, double ypos) override;
 
+  void ScrollCallback(double xoffset, double yoffset) override;
+
+  GUISettings gui_settings_{};
   SimSettings sim_settings_{};
 
   GameX::Graphics::UScene scene_;
@@ -41,6 +44,8 @@ class GUIApp : public GameX::Base::Application {
   GameX::Graphics::UFilm film_;
   GameX::Graphics::UEntity entity_;
   std::unique_ptr<GameX::Graphics::ColorParticleGroup> color_particle_group_;
+
+  float camera_distance_{3.0f};
 
   std::unique_ptr<CameraControllerThirdPerson> camera_controller_;
 
