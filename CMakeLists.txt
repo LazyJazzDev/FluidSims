@@ -9,4 +9,6 @@ set(CMAKE_CUDA_STANDARD 17)
 
 add_subdirectory(external/GameX)
 
+set(FLUID_ASSETS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets)
+
 add_subdirectory(src)

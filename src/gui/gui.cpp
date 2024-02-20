@@ -1,13 +1,25 @@
 #include "gui/gui.h"
 
-GUIApp::GUIApp(const GUIApp::AppSettings &settings) : Application(settings) {
+#include "random"
+
+GUIApp::GUIApp(const AppSettings &settings, const SimSettings &sim_settings)
+    : Application(settings), sim_settings_(sim_settings) {
   scene_ = Renderer()->CreateScene();
   auto extent = VkCore()->SwapChain()->Extent();
   film_ = Renderer()->CreateFilm(extent.width, extent.height);
+
+  GameX::Base::AssetProbe::PublicInstance()->AddSearchPath(FLUID_ASSETS_DIR);
+
+  container_model_ = Renderer()->CreateStaticModel("model/container.obj");
+
   particle_model_ = Renderer()->CreateStaticModel("models/sphere.obj");
   envmap_image_ = Renderer()->CreateImage("textures/envmap.hdr");
 
-  glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+  //  glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+}
+
+GUIApp::~GUIApp() {
+  // Release all assets in reverse order
 }
 
 void GUIApp::OnInit() {
@@ -27,17 +39,37 @@ void GUIApp::OnInit() {
           particle_model_.get(), 1048576);
 
   color_particle_group_->SetGlobalSettings(
-      GameX::Graphics::ColorParticleGroup::GlobalSettings{0.1f});
-  color_particle_group_->SetParticleInfo(
-      {{glm::vec3{-1.0f, 0.0f, 0.0f}, glm::vec3{1.0f, 0.5f, 0.5f}},
-       {glm::vec3{1.0f, 0.0f, 0.0f}, glm::vec3{0.5f, 0.5f, 0.5f}}});
+      GameX::Graphics::ColorParticleGroup::GlobalSettings{
+          sim_settings_.particle_radius});
+
+  entity_ = scene_->CreateEntity(container_model_.get());
 
   auto extent = VkCore()->SwapChain()->Extent();
   float aspect =
       static_cast<float>(extent.width) / static_cast<float>(extent.height);
   camera_controller_ =
       std::make_unique<CameraControllerThirdPerson>(camera_.get(), aspect);
-  camera_controller_->SetCenter(glm::vec3{0.0f, 0.0f, 0.0f});
+  camera_controller_->SetCenter(glm::vec3{0.5f, 0.5f, 0.5f});
+  camera_controller_->SetDistance(3.0f);
+
+  instance_ = CreateFluidLogicInstance(glm::ivec3{sim_settings_.grid_size});
+
+  std::vector<glm::vec3> positions;
+  float cell_size = 1.0f / sim_settings_.grid_size;
+  float cell_volume = cell_size * cell_size * cell_size;
+
+  for (int x = 0; x < sim_settings_.grid_size * 2; x++) {
+    for (int y = 0; y < sim_settings_.grid_size * 2; y++) {
+      for (int z = 0; z < sim_settings_.grid_size * 2; z++) {
+        glm::vec3 p = (glm::vec3{x, y, z} + 0.5f) * cell_size * 0.5f;
+        if (sim_settings_.initial_particle_range(p)) {
+          positions.push_back(p);
+        }
+      }
+    }
+  }
+
+  instance_->SetParticles(positions);
 }
 
 void GUIApp::OnUpdate() {
@@ -48,6 +80,24 @@ void GUIApp::OnUpdate() {
                          .count();
   last_time = current_time;
   camera_controller_->Update(delta_time);
+
+  instance_->Update(sim_settings_.delta_t);
+
+  auto particles = instance_->GetParticles();
+  std::vector<GameX::Graphics::ColorParticleGroup::ParticleInfo> particle_infos(
+      particles.size());
+
+  std::transform(particles.begin(), particles.end(), particle_infos.begin(),
+                 [](const glm::vec3 &p) {
+                   return GameX::Graphics::ColorParticleGroup::ParticleInfo{
+                       p, glm::vec3{0.6f, 0.7f, 0.8f}};
+                 });
+
+  color_particle_group_->SetParticleInfo(particle_infos);
+  static FrameCounter frame_counter;
+  frame_counter.RecordFrame();
+  auto fps = frame_counter.GetFPSString();
+  glfwSetWindowTitle(window_, ("FPS: " + fps).c_str());
 }
 
 void GUIApp::OnRender() {
@@ -70,13 +120,13 @@ void GUIApp::CursorPosCallback(double xpos, double ypos) {
   last_xpos = xpos;
   last_ypos = ypos;
 
+  if (glfwGetMouseButton(window_, GLFW_MOUSE_BUTTON_LEFT) != GLFW_PRESS) {
+    ignore_next_mouse_move_ = true;
+  }
+
   if (!ignore_next_mouse_move_) {
     camera_controller_->CursorMove(dx, dy);
   }
 
   ignore_next_mouse_move_ = false;
-}
-
-GUIApp::~GUIApp() {
-  // Release all assets in reverse order
 }

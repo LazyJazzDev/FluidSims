@@ -3,6 +3,8 @@
 
 int main() {
   GUIApp::AppSettings settings;
-  GUIApp app(settings);
+  settings.width = 1920;
+  settings.height = 1080;
+  GUIApp app(settings, SimSettings());
   app.Run();
 }
