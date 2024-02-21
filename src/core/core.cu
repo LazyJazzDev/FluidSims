@@ -2,6 +2,7 @@
 
 #include "core/core.cuh"
 #include "core/device_clock.cuh"
+#include "core/linear_solvers.cuh"
 
 template <class VectorType>
 __device__ float KernelFunction(const VectorType &v) {
@@ -468,6 +469,10 @@ void FluidCore::Update(float delta_time) {
 
   device_clock.Record("Prepare Poisson Equation");
 
+  ConjugateGradient(operator_, b_, pressure_);
+
+  device_clock.Record("Solve Poisson Equation");
+
   device_clock.Finish();
 
   //    level_set_.StoreAsSheet("level_set.csv");
@@ -482,4 +487,34 @@ void FluidCore::Update(float delta_time) {
 
   //    b_.StoreAsSheet("divergence.csv");
   //    operator_.adjacent_info.StoreAsSheet("adjacent_info.csv");
+
+  pressure_.StoreAsSheet("pressure.csv");
+}
+
+__global__ void PoissonOperatorKernel(GridView<AdjacentInfo> adjacent_infos,
+                                      GridView<float> pressure,
+                                      GridView<float> result) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < result.Header().TotalCells()) {
+    auto index3 = result.Header().Index(id);
+    auto adjacent_info = adjacent_infos[id];
+    float res = adjacent_info.local * pressure[id];
+    for (int dim = 0; dim < 3; dim++) {
+      for (int edge = 0; edge < 2; edge++) {
+        glm::ivec3 offset{0};
+        offset[dim] = edge * 2 - 1;
+        auto neighbor_index3 = index3 + offset;
+        if (pressure.LegalIndex(neighbor_index3)) {
+          res += adjacent_info.edge[dim][edge] * pressure(neighbor_index3);
+        }
+      }
+    }
+    result[id] = res;
+  }
+}
+
+void FluidOperator::operator()(VectorView<float> x, VectorView<float> y) {
+  PoissonOperatorKernel<<<CALL_SHAPE(adjacent_info.Header().TotalCells())>>>(
+      adjacent_info.View(), GridView<float>(adjacent_info.Header(), x.buffer),
+      GridView<float>(adjacent_info.Header(), y.buffer));
 }

@@ -1,7 +1,7 @@
 #pragma once
 #include "core/grids.cuh"
 #include "core/interface.h"
-#include "core/views.cuh"
+#include "core/vector.cuh"
 
 #define BLOCK_SIZE 256
 #define CALL_SHAPE(x) ((x) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE
@@ -31,6 +31,8 @@ struct FluidOperator {
     adjacent_info = Grid<AdjacentInfo>(center_header);
   }
   Grid<AdjacentInfo> adjacent_info;
+
+  void operator()(VectorView<float> x, VectorView<float> y);
 };
 
 class FluidCore : public FluidInterface {
