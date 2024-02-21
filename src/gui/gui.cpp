@@ -47,6 +47,8 @@ void GUIApp::OnInit() {
           gui_settings_.particle_radius});
 
   entity_ = scene_->CreateEntity(container_model_.get());
+  entity_->SetAffineMatrix(glm::translate(glm::mat4(1.0f), glm::vec3{0.05f}) *
+                           glm::scale(glm::mat4(1.0f), glm::vec3{0.9f}));
 
   auto extent = VkCore()->SwapChain()->Extent();
   float aspect =
