@@ -11,6 +11,28 @@ struct Particle {
   glm::vec3 velocity;
 };
 
+struct AdjacentInfo {
+  float local{};
+  float edge[3][2]{};
+
+  friend std::ostream &operator<<(std::ostream &os, const AdjacentInfo &info) {
+    os << info.local << ";";
+    for (int dim = 0; dim < 3; dim++) {
+      for (int edge = 0; edge < 2; edge++) {
+        os << info.edge[dim][edge] << ";";
+      }
+    }
+    return os;
+  }
+};
+
+struct FluidOperator {
+  FluidOperator(GridHeader center_header = GridHeader{}) {
+    adjacent_info = Grid<AdjacentInfo>(center_header);
+  }
+  Grid<AdjacentInfo> adjacent_info;
+};
+
 class FluidCore : public FluidInterface {
  public:
   explicit FluidCore(SimSettings sim_settings);
@@ -27,7 +49,14 @@ class FluidCore : public FluidInterface {
 
   Grid<float> pressure_;
   Grid<float> level_set_;
+
+  Grid<float> b_;
+  FluidOperator operator_;
+
+  MACGrid<float> transfer_weight_;
+  MACGrid<float> transfer_weight_bak_;
   MACGrid<float> velocity_;
+  MACGrid<float> velocity_bak_;
   MACGrid<float> mass_sample_;
 
   thrust::device_vector<Particle> particles_;

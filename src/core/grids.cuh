@@ -3,6 +3,8 @@
 #include "fstream"
 #include "glm/glm.hpp"
 #include "thrust/device_vector.h"
+#include "thrust/host_vector.h"
+#include "thrust/sort.h"
 
 struct GridHeader;
 
@@ -84,7 +86,23 @@ class GridView {
     return buffer_[header_.Index(x, y, z)];
   }
 
-  GridHeader Header() const {
+  __device__ __host__ bool LegalIndex(const glm::ivec3 &index) const {
+    return index.x >= 0 && index.x < header_.size.x && index.y >= 0 &&
+           index.y < header_.size.y && index.z >= 0 && index.z < header_.size.z;
+  }
+
+  __device__ __host__ bool InRangeWorldPos(const glm::vec3 &world_pos) const {
+    auto grid_pos = header_.World2Grid(world_pos);
+    return InRangeGridPos(glm::ivec3(grid_pos));
+  }
+
+  __device__ __host__ bool InRangeGridPos(const glm::ivec3 &grid_pos) const {
+    return grid_pos.x >= 0 && grid_pos.x < header_.size.x && grid_pos.y >= 0 &&
+           grid_pos.y < header_.size.y && grid_pos.z >= 0 &&
+           grid_pos.z < header_.size.z;
+  }
+
+  __device__ __host__ GridHeader Header() const {
     return header_;
   }
 
@@ -92,6 +110,28 @@ class GridView {
     thrust::fill(thrust::device_pointer_cast(buffer_),
                  thrust::device_pointer_cast(buffer_ + header_.TotalCells()),
                  content);
+  }
+
+  void StoreAsSheet(const std::string &file_name,
+                    bool open_after_store = false) const {
+    std::vector<Ty> host_buffer(header_.TotalCells());
+    thrust::copy(thrust::device_pointer_cast(buffer_),
+                 thrust::device_pointer_cast(buffer_ + header_.TotalCells()),
+                 host_buffer.begin());
+    std::ofstream file_out(file_name);
+    for (int z = 0; z < header_.size.z; z++) {
+      file_out << "z=" << z << ",,,,,," << std::endl;
+      for (int y = 0; y < header_.size.y; y++) {
+        for (int x = 0; x < header_.size.x; x++) {
+          file_out << host_buffer[header_.Index(x, y, z)] << ", ";
+        }
+        file_out << std::endl;
+      }
+    }
+    file_out.close();
+    if (open_after_store) {
+      std::system(("start /wait " + file_name).c_str());
+    }
   }
 
  private:
@@ -123,25 +163,8 @@ class Grid {
   }
 
   void StoreAsSheet(const std::string &file_name,
-                    bool open_after_store = false) const {
-    if (open_after_store) {
-      std::vector<Ty> host_buffer(header_.TotalCells());
-      thrust::copy(buffer_.begin(), buffer_.end(), host_buffer.begin());
-      std::ofstream file_out(file_name);
-      for (int z = 0; z < header_.size.z; z++) {
-        for (int y = 0; y < header_.size.y; y++) {
-          for (int x = 0; x < header_.size.x; x++) {
-            file_out << host_buffer[header_.Index(x, y, z)] << ", ";
-          }
-          file_out << std::endl;
-        }
-        file_out << ",,,,,," << std::endl;
-      }
-      file_out.close();
-      if (open_after_store) {
-        std::system(("start /wait " + file_name).c_str());
-      }
-    }
+                    bool open_after_store = false) {
+    View().StoreAsSheet(file_name, open_after_store);
   }
 
  private:
@@ -150,9 +173,15 @@ class Grid {
 };
 
 template <class Ty>
+struct MACGridView {
+  GridView<Ty> grids[3];
+};
+
+template <class Ty>
 class MACGrid {
  public:
-  MACGrid(GridHeader cell_header = GridHeader()) : cell_header_(cell_header) {
+  MACGrid(GridHeader cell_header = GridHeader())
+      : cell_header_(std::move(cell_header)) {
     auto u_grid_header_ = cell_header_;
     u_grid_header_.size.x += 1;
     u_grid_header_.origin.y += 0.5f * u_grid_header_.delta_x;
@@ -222,6 +251,10 @@ class MACGrid {
     UGrid().Clear(content);
     VGrid().Clear(content);
     WGrid().Clear(content);
+  }
+
+  MACGridView<Ty> View() {
+    return {UGrid().View(), VGrid().View(), WGrid().View()};
   }
 
  private:
