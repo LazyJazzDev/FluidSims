@@ -75,6 +75,9 @@ void GUIApp::OnInit() {
   }
 
   instance_->SetParticles(positions);
+  if (gui_settings_.multithreaded) {
+    logic_thread_ = std::thread(&GUIApp::LogicThread, this);
+  }
 }
 
 void GUIApp::OnUpdate() {
@@ -86,19 +89,30 @@ void GUIApp::OnUpdate() {
   last_time = current_time;
   camera_controller_->Update(delta_time);
 
-  instance_->Update(sim_settings_.delta_t);
+  if (!gui_settings_.multithreaded) {
+    instance_->Update(sim_settings_.delta_t);
+    particle_updated_ = true;
+  }
 
-  auto particles = instance_->GetParticles();
-  std::vector<GameX::Graphics::ColorParticleGroup::ParticleInfo> particle_infos(
-      particles.size());
+  {
+    std::unique_lock<std::mutex> lock(render_resource_mutex_);
+    if (particle_updated_) {
+      auto particles = instance_->GetParticles();
+      std::vector<GameX::Graphics::ColorParticleGroup::ParticleInfo>
+          particle_infos(particles.size());
 
-  std::transform(particles.begin(), particles.end(), particle_infos.begin(),
-                 [](const glm::vec3 &p) {
-                   return GameX::Graphics::ColorParticleGroup::ParticleInfo{
-                       p, glm::vec3{0.6f, 0.7f, 0.8f}};
-                 });
+      std::transform(particles.begin(), particles.end(), particle_infos.begin(),
+                     [](const glm::vec3 &p) {
+                       return GameX::Graphics::ColorParticleGroup::ParticleInfo{
+                           p, glm::vec3{0.6f, 0.7f, 0.8f}};
+                     });
 
-  color_particle_group_->SetParticleInfo(particle_infos);
+      color_particle_group_->SetParticleInfo(particle_infos);
+      particle_updated_ = false;
+      update_resource_cv_.notify_one();
+    }
+  }
+
   static FrameCounter frame_counter;
   frame_counter.RecordFrame();
   auto fps = frame_counter.GetFPSString();
@@ -114,6 +128,15 @@ void GUIApp::OnRender() {
 }
 
 void GUIApp::OnCleanup() {
+  if (gui_settings_.multithreaded) {
+    thread_exit_ = true;
+    {
+      std::unique_lock<std::mutex> lock(render_resource_mutex_);
+      particle_updated_ = false;
+      update_resource_cv_.notify_one();
+    }
+    logic_thread_.join();
+  }
 }
 
 void GUIApp::CursorPosCallback(double xpos, double ypos) {
@@ -142,4 +165,20 @@ void GUIApp::ScrollCallback(double xoffset, double yoffset) {
   camera_controller_->StoreCurrentState();
   camera_controller_->SetInterpolationFactor();
   camera_controller_->SetDistance(camera_distance_);
+}
+
+void GUIApp::LogicThread() {
+  while (!thread_exit_) {
+    instance_->Update(sim_settings_.delta_t);
+    {
+      std::unique_lock<std::mutex> lock(render_resource_mutex_);
+      if (thread_exit_) {
+        break;
+      }
+      particle_updated_ = true;
+      while (particle_updated_) {
+        update_resource_cv_.wait(lock);
+      }
+    }
+  }
 }
