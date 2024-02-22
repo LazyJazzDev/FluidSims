@@ -60,6 +60,7 @@ class FluidCore : public FluidInterface {
   MACGrid<float> velocity_;
   MACGrid<float> velocity_bak_;
   MACGrid<float> mass_sample_;
+  MACGrid<bool> valid_sample_;
 
   thrust::device_vector<Particle> particles_;
 };

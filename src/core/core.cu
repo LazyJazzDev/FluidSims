@@ -52,6 +52,7 @@ FluidCore::FluidCore(SimSettings sim_settings)
   transfer_weight_ = MACGrid<float>(grid_cell_header_);
   velocity_bak_ = MACGrid<float>(grid_cell_header_);
   transfer_weight_bak_ = MACGrid<float>(grid_cell_header_);
+  valid_sample_ = MACGrid<bool>(grid_cell_header_);
 
   mass_sample_ = MACGrid<float>(grid_cell_header_);
 }
@@ -398,6 +399,7 @@ __device__ void CalculateAirPressure(float level_set_fluid,
 __global__ void UpdateVelocityFieldKernel(GridView<float> pressure,
                                           GridView<float> level_set,
                                           GridView<float> vel_field,
+                                          GridView<bool> valid_sample,
                                           float delta_t,
                                           float rho,
                                           float delta_x,
@@ -408,12 +410,14 @@ __global__ void UpdateVelocityFieldKernel(GridView<float> pressure,
     auto offset = glm::ivec3{0};
     offset[dim] = -1;
     float new_vel = vel_field(index3);
+    bool valid = false;
     if (index3[dim] > 0 && index3[dim] < vel_field.Header().size[dim] - 1) {
       auto lower_pressure = pressure(index3 + offset);
       auto upper_pressure = pressure(index3);
       auto lower_level_set = level_set(index3 + offset);
       auto upper_level_set = level_set(index3);
       if (lower_level_set > 0.0f || upper_level_set > 0.0f) {
+        valid = true;
         if (upper_level_set <= 0.0f) {
           CalculateAirPressure(lower_level_set, upper_level_set, lower_pressure,
                                upper_pressure);
@@ -427,6 +431,7 @@ __global__ void UpdateVelocityFieldKernel(GridView<float> pressure,
     } else {
       new_vel = 0.0f;
     }
+    valid_sample(index3) = valid;
     vel_field(index3) = new_vel;
   }
 }
@@ -442,6 +447,9 @@ __global__ void MixVelocityFieldKernel(GridView<float> vel_field,
 
 __global__ void Grid2ParticleTransferKernel(Particle *particles,
                                             MACGridView<float> vel_field,
+                                            MACGridView<float> mass,
+                                            MACGridView<bool> valid_sample,
+                                            float unit_mass,
                                             int num_particle) {
   int id = blockIdx.x * blockDim.x + threadIdx.x;
   if (id < num_particle) {
@@ -459,10 +467,13 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
           for (int dz = -1; dz <= 1; dz++) {
             auto index3 = nearest_point + glm::ivec3{dx, dy, dz};
             if (vel_field.grids[dim].LegalIndex(index3)) {
-              auto weight = KernelFunction(glm::vec3{index3} - grid_pos);
-              if (weight > 0.0f) {
-                accum_weighted_vel += weight * vel_field.grids[dim](index3);
-                accum_weight += weight;
+              if (valid_sample.grids[dim](index3)) {
+                auto weight = KernelFunction(glm::vec3{index3} - grid_pos) *
+                              mass.grids[dim](index3);
+                if (weight > 0.0f) {
+                  accum_weighted_vel += weight * vel_field.grids[dim](index3);
+                  accum_weight += weight;
+                }
               }
             }
           }
@@ -568,55 +579,47 @@ void FluidCore::Update(float delta_time) {
   UpdateVelocityFieldKernel<<<CALL_SHAPE(
       velocity_.UGrid().Header().TotalCells())>>>(
       pressure_.View(), level_set_.View(), velocity_.UView(),
-      sim_settings_.delta_t, sim_settings_.rho, sim_settings_.delta_x, 0);
+      valid_sample_.UView(), sim_settings_.delta_t, sim_settings_.rho,
+      sim_settings_.delta_x, 0);
   UpdateVelocityFieldKernel<<<CALL_SHAPE(
       velocity_.VGrid().Header().TotalCells())>>>(
       pressure_.View(), level_set_.View(), velocity_.VView(),
-      sim_settings_.delta_t, sim_settings_.rho, sim_settings_.delta_x, 1);
+      valid_sample_.VView(), sim_settings_.delta_t, sim_settings_.rho,
+      sim_settings_.delta_x, 1);
   UpdateVelocityFieldKernel<<<CALL_SHAPE(
       velocity_.WGrid().Header().TotalCells())>>>(
       pressure_.View(), level_set_.View(), velocity_.WView(),
-      sim_settings_.delta_t, sim_settings_.rho, sim_settings_.delta_x, 2);
-
-  MixVelocityFieldKernel<<<CALL_SHAPE(
-      velocity_.UGrid().Header().TotalCells())>>>(
-      velocity_.UView(), mass_sample_.UView(),
-      sim_settings_.rho * sim_settings_.delta_x * sim_settings_.delta_x *
-          sim_settings_.delta_x);
-  MixVelocityFieldKernel<<<CALL_SHAPE(
-      velocity_.VGrid().Header().TotalCells())>>>(
-      velocity_.VView(), mass_sample_.VView(),
-      sim_settings_.rho * sim_settings_.delta_x * sim_settings_.delta_x *
-          sim_settings_.delta_x);
-  MixVelocityFieldKernel<<<CALL_SHAPE(
-      velocity_.WGrid().Header().TotalCells())>>>(
-      velocity_.WView(), mass_sample_.WView(),
-      sim_settings_.rho * sim_settings_.delta_x * sim_settings_.delta_x *
-          sim_settings_.delta_x);
+      valid_sample_.WView(), sim_settings_.delta_t, sim_settings_.rho,
+      sim_settings_.delta_x, 2);
 
   device_clock.Record("Update Velocity Field");
 
   Grid2ParticleTransferKernel<<<CALL_SHAPE(particles_.size())>>>(
-      particles_.data().get(), velocity_.View(), particles_.size());
+      particles_.data().get(), velocity_.View(), mass_sample_.View(),
+      valid_sample_.View(),
+      sim_settings_.rho * sim_settings_.delta_x * sim_settings_.delta_x *
+          sim_settings_.delta_x,
+      particles_.size());
 
   device_clock.Record("Grid 2 Particle Transfer");
 
   device_clock.Finish();
 
-  //        level_set_.StoreAsSheet("level_set.csv");
-
-  //        velocity_.UGrid().StoreAsSheet("velocity_u.csv");
-  //        velocity_.VGrid().StoreAsSheet("velocity_v.csv");
-  //        velocity_.WGrid().StoreAsSheet("velocity_w.csv");
+  //    level_set_.StoreAsSheet("level_set.csv");
   //
-  //        mass_sample_.UGrid().StoreAsSheet("mass_sample_u.csv");
-  //        mass_sample_.VGrid().StoreAsSheet("mass_sample_v.csv");
-  //        mass_sample_.WGrid().StoreAsSheet("mass_sample_w.csv");
-
+  //    velocity_.UGrid().StoreAsSheet("velocity_u.csv");
+  //    velocity_.VGrid().StoreAsSheet("velocity_v.csv");
+  //    velocity_.WGrid().StoreAsSheet("velocity_w.csv");
+  //
+  //    mass_sample_.UGrid().StoreAsSheet("mass_sample_u.csv");
+  //    mass_sample_.VGrid().StoreAsSheet("mass_sample_v.csv");
+  //    mass_sample_.WGrid().StoreAsSheet("mass_sample_w.csv");
+  //
   //    b_.StoreAsSheet("divergence.csv");
   //    operator_.adjacent_info.StoreAsSheet("adjacent_info.csv");
-
+  //
   //    pressure_.StoreAsSheet("pressure.csv");
+  //    std::system("pause");
 }
 
 __global__ void PoissonOperatorKernel(GridView<AdjacentInfo> adjacent_infos,

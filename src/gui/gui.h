@@ -6,25 +6,37 @@
 #include "gui/frame_counter.h"
 
 struct GUISettings {
-  float particle_radius{0.01f};
+  float particle_radius{0.005f};
   std::function<bool(const glm::vec3 &)> initial_particle_range =
       [](const glm::vec3 &p) {
-        return glm::length(p - glm::vec3{0.3, 0.5f, 0.3f}) < 0.2f;
+        //      return p.x > 0.05f && p.x < 0.95f && p.y > 0.05f && p.y < 0.95f
+        //      &&
+        //             p.z > 0.05f && p.z < 0.95f;
+        return glm::length(p - glm::vec3{0.3, 0.8f, 0.3f}) < 0.1f ||
+               (p.x > 0.05f && p.x < 0.5f && p.y > 0.05f && p.y < 0.5f &&
+                p.z > 0.05f && p.z < 0.5f
+
+               );
       };
 };
 
 class GUIApp : public GameX::Base::Application {
  public:
   typedef GameX::Base::ApplicationSettings AppSettings;
+
   GUIApp(const AppSettings &settings,
          const GUISettings &gui_settings = {},
          const SimSettings &sim_settings = {});
+
   ~GUIApp();
 
  private:
   void OnInit() override;
+
   void OnUpdate() override;
+
   void OnRender() override;
+
   void OnCleanup() override;
 
   void CursorPosCallback(double xpos, double ypos) override;
