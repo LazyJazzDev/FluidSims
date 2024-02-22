@@ -291,6 +291,29 @@ __device__ __host__ bool InsideObstacle(const glm::vec3 &pos) {
            pos.z > 0.05f && pos.z < 0.95f);
 }
 
+__device__ __host__ void UpdateSurfaceInfo(const glm::vec3 &pos,
+                                           const glm::vec4 &plane,
+                                           float &dist,
+                                           glm::vec3 &normal) {
+  auto d = glm::dot(glm::vec3{plane}, pos) + plane.w;
+  if (d < dist) {
+    dist = d;
+    normal = glm::vec3{plane};
+  }
+}
+
+__device__ __host__ glm::vec3 NearestSurfaceNormal(const glm::vec3 &pos) {
+  float dist = 1e10f;
+  glm::vec3 normal{0, 1, 0};
+  UpdateSurfaceInfo(pos, glm::vec4{0, 1, 0, -0.05f}, dist, normal);
+  UpdateSurfaceInfo(pos, glm::vec4{0, -1, 0, 0.95f}, dist, normal);
+  UpdateSurfaceInfo(pos, glm::vec4{1, 0, 0, -0.05f}, dist, normal);
+  UpdateSurfaceInfo(pos, glm::vec4{-1, 0, 0, 0.95f}, dist, normal);
+  UpdateSurfaceInfo(pos, glm::vec4{0, 0, 1, -0.05f}, dist, normal);
+  UpdateSurfaceInfo(pos, glm::vec4{0, 0, -1, 0.95f}, dist, normal);
+  return normal;
+}
+
 __global__ void CalculateMassSampleKernel(GridView<float> mass_sample,
                                           float rho,
                                           float delta_x) {
@@ -455,13 +478,26 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
   if (id < num_particle) {
     Particle particle = particles[id];
 
+    glm::vec3 normal = NearestSurfaceNormal(particle.position);
+
+    glm::vec3 resulting_vel{0.0f};
+
     for (int dim = 0; dim < 3; dim++) {
       auto nearest_point =
           vel_field.grids[dim].Header().NearestGridPoint(particle.position);
       auto grid_pos =
           vel_field.grids[dim].Header().World2Grid(particle.position);
-      float accum_weighted_vel = 0.0f;
-      float accum_weight = 0.0f;
+      glm::vec3 accum_weighted_vel_normal{0.0f};
+      float accum_weight_normal = 0.0f;
+      glm::vec3 accum_weighted_vel_tangential{0.0f};
+      float accum_weight_tangential = 0.0f;
+
+      glm::vec3 axis{0.0f};
+      axis[dim] = 1.0f;
+
+      glm::vec3 normal_component = glm::dot(normal, axis) * normal;
+      glm::vec3 tangential_component = axis - normal_component;
+
       for (int dx = -1; dx <= 1; dx++) {
         for (int dy = -1; dy <= 1; dy++) {
           for (int dz = -1; dz <= 1; dz++) {
@@ -471,20 +507,30 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
                 auto weight = KernelFunction(glm::vec3{index3} - grid_pos) *
                               mass.grids[dim](index3);
                 if (weight > 0.0f) {
-                  accum_weighted_vel += weight * vel_field.grids[dim](index3);
-                  accum_weight += weight;
+                  auto vel = vel_field.grids[dim](index3);
+                  auto m = mass.grids[dim](index3);
+                  accum_weighted_vel_tangential +=
+                      m * weight * vel * tangential_component;
+                  accum_weight_tangential += mass.grids[dim](index3) * weight;
+                  accum_weighted_vel_normal +=
+                      weight * vel * normal_component * m / unit_mass;
+                  accum_weight_normal += weight;
                 }
               }
             }
           }
         }
       }
-      if (accum_weight > 0.0f) {
-        particle.velocity[dim] = accum_weighted_vel / accum_weight;
-      } else {
-        particle.velocity[dim] = 0.0f;
+      if (accum_weight_normal > 0.0f) {
+        resulting_vel += accum_weighted_vel_normal / accum_weight_normal;
+      }
+      if (accum_weight_tangential > 0.0f) {
+        resulting_vel +=
+            accum_weighted_vel_tangential / accum_weight_tangential;
       }
     }
+
+    particle.velocity = resulting_vel;
 
     particles[id] = particle;
   }
@@ -493,7 +539,7 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
 void FluidCore::Update(float delta_time) {
   DeviceClock device_clock;
 
-  pressure_.Clear();
+  //    pressure_.Clear();
   level_set_.Clear(-1.0f);
   velocity_.Clear();
   transfer_weight_.Clear();
