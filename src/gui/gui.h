@@ -13,8 +13,8 @@ struct GUISettings {
         //      &&
         //             p.z > 0.05f && p.z < 0.95f;
         return glm::length(p - glm::vec3{0.3, 0.8f, 0.3f}) < 0.1f ||
-               (p.x > 0.05f && p.x < 0.95f && p.y > 0.05f && p.y < 0.5f &&
-                p.z > 0.05f && p.z < 0.5f);
+               (p.x > 0.05f && p.x < 0.95f && p.y > 0.05f && p.y < 0.4f &&
+                p.z > 0.05f && p.z < 0.95f);
       };
 };
 

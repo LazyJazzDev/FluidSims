@@ -32,6 +32,9 @@ struct AdjacentOp : public LinearOp, public JacobiOp {
   AdjacentOp(Grid<AdjacentInfo> &grid) : adjacent_info(grid.View()) {
   }
 
+  AdjacentOp(GridView<AdjacentInfo> view) : adjacent_info(view) {
+  }
+
   void operator()(VectorView<float> x, VectorView<float> y) override;
 
   void LU(VectorView<float> x, VectorView<float> y) override;
@@ -41,18 +44,22 @@ struct AdjacentOp : public LinearOp, public JacobiOp {
   GridView<AdjacentInfo> adjacent_info;
 };
 
-struct FluidOperator : public LinearOp, public JacobiOp {
+struct FluidOperator : public LinearOp, public JacobiOp, public MultiGridOp {
   FluidOperator(GridHeader center_header = GridHeader{}) {
     adjacent_info = Grid<AdjacentInfo>(center_header);
   }
 
   Grid<AdjacentInfo> adjacent_info;
 
+  std::vector<Grid<AdjacentInfo>> down_sampled_adjacent_info;
+
   void operator()(VectorView<float> x, VectorView<float> y) override;
 
   void LU(VectorView<float> x, VectorView<float> y) override;
 
   void D_inv(VectorView<float> x, VectorView<float> y) override;
+
+  std::vector<MultiGridLevel> MultiGridLevels() override;
 };
 
 class FluidCore : public FluidInterface {

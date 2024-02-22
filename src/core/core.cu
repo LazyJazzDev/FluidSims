@@ -620,7 +620,9 @@ void FluidCore::Update(float delta_time) {
 
   //    ConjugateGradient(operator_, b_, pressure_);
 
-  Jacobi(operator_, b_, pressure_, 3000);
+  //  Jacobi(operator_, b_, pressure_, 3000);
+
+  MultiGrid(operator_, b_, pressure_, 10);
 
   device_clock.Record("Solve Poisson Equation");
 
@@ -759,4 +761,124 @@ void FluidOperator::LU(VectorView<float> x, VectorView<float> y) {
 
 void FluidOperator::D_inv(VectorView<float> x, VectorView<float> y) {
   AdjacentOp{adjacent_info}.D_inv(x, y);
+}
+
+__global__ void DownSampleResidualKernel(GridView<float> residual,
+                                         GridView<float> residual_coarse) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < residual_coarse.Header().TotalCells()) {
+    auto index3 = residual_coarse.Header().Index(id);
+    auto index3_fine = index3 * 2;
+    float res = 0.0f;
+    for (int dx = 0; dx < 2; dx++) {
+      for (int dy = 0; dy < 2; dy++) {
+        for (int dz = 0; dz < 2; dz++) {
+          auto index3_fine_offset = index3_fine + glm::ivec3{dx, dy, dz};
+          if (residual.LegalIndex(index3_fine_offset)) {
+            res += residual(index3_fine_offset);
+          }
+        }
+      }
+    }
+    residual_coarse[id] = res / 8.0f;
+  }
+}
+
+__global__ void UpSampleCorrectionKernel(GridView<float> correction,
+                                         GridView<float> correction_fine) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < correction_fine.Header().TotalCells()) {
+    auto index3 = correction_fine.Header().Index(id);
+    auto index3_coarse = index3 / 2;
+    correction_fine[id] = correction(index3_coarse);
+  }
+}
+
+__global__ void DownSampleAdjacentInfoKernel(
+    GridView<AdjacentInfo> adjacent_info,
+    GridView<AdjacentInfo> adjacent_info_coarse) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < adjacent_info_coarse.Header().TotalCells()) {
+    auto index3 = adjacent_info_coarse.Header().Index(id);
+    auto index3_fine = index3 * 2;
+    AdjacentInfo res{};
+    for (int dx = 0; dx < 2; dx++) {
+      for (int dy = 0; dy < 2; dy++) {
+        for (int dz = 0; dz < 2; dz++) {
+          auto offset = glm::ivec3{dx, dy, dz};
+          auto index3_fine_offset = index3_fine + offset;
+          if (adjacent_info.LegalIndex(index3_fine_offset)) {
+            auto fine_adj = adjacent_info(index3_fine_offset);
+            res.local += fine_adj.local;
+            for (int dim = 0; dim < 3; dim++) {
+              for (int edge = 0; edge < 2; edge++) {
+                if (edge == offset[dim]) {
+                  res.edge[dim][edge] += fine_adj.edge[dim][edge];
+                } else {
+                  res.local += fine_adj.edge[dim][edge];
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    adjacent_info_coarse[id] = res;
+  }
+}
+
+std::vector<MultiGridLevel> FluidOperator::MultiGridLevels() {
+  std::vector<MultiGridLevel> levels;
+
+  GridView<AdjacentInfo> current_adjacent_info = adjacent_info.View();
+
+  down_sampled_adjacent_info.clear();
+
+  while (true) {
+    levels.emplace_back();
+    auto &level = levels.back();
+    level.linear_op = [current_adjacent_info](VectorView<float> x,
+                                              VectorView<float> y) {
+      AdjacentOp{current_adjacent_info}(x, y);
+    };
+    level.pre_smooth = [current_adjacent_info](VectorView<float> x,
+                                               VectorView<float> y) {
+      auto adj_op = AdjacentOp{current_adjacent_info};
+      Jacobi(adj_op, x, y, 1);
+    };
+    level.post_smooth = [current_adjacent_info](VectorView<float> x,
+                                                VectorView<float> y) {
+      auto adj_op = AdjacentOp{current_adjacent_info};
+      Jacobi(adj_op, x, y, 1);
+    };
+    auto header = current_adjacent_info.Header();
+
+    //        printf("%d %d %d\n", header.size.x, header.size.y, header.size.z);
+
+    if (header.size.x > 5 && header.size.y > 5 && header.size.z > 5) {
+      auto coarser_header = header;
+      coarser_header.size = (coarser_header.size + 1) / 2;
+      coarser_header.delta_x *= 2;
+      level.down_sample = [header, coarser_header](VectorView<float> x) {
+        Vector<float> y(coarser_header.TotalCells());
+        DownSampleResidualKernel<<<CALL_SHAPE(coarser_header.TotalCells())>>>(
+            GridView<float>(header, x.buffer),
+            GridView<float>(coarser_header, y.Buffer().get()));
+        return y;
+      };
+      level.up_sample = [header, coarser_header](VectorView<float> x) {
+        Vector<float> y(header.TotalCells());
+        UpSampleCorrectionKernel<<<CALL_SHAPE(header.TotalCells())>>>(
+            GridView<float>(coarser_header, x.buffer),
+            GridView<float>(header, y.Buffer().get()));
+        return y;
+      };
+      down_sampled_adjacent_info.emplace_back(coarser_header);
+      current_adjacent_info = down_sampled_adjacent_info.back().View();
+    } else {
+      break;
+    }
+  }
+
+  return levels;
 }

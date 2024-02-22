@@ -3,8 +3,7 @@
 
 int main() {
   GUIApp::AppSettings settings;
-  settings.width = 1920;
-  settings.height = 1080;
+  settings.fullscreen = true;
   GUIApp app(settings, GUISettings{}, SimSettings{});
   app.Run();
 }

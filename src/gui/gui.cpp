@@ -40,7 +40,7 @@ void GUIApp::OnInit() {
   //    entity_ = scene_->CreateEntity(particle_model_.get());
   color_particle_group_ =
       scene_->CreateParticleGroup<GameX::Graphics::ColorParticleGroup>(
-          particle_model_.get(), 1048576);
+          particle_model_.get(), 1048576 * 8);
 
   color_particle_group_->SetGlobalSettings(
       GameX::Graphics::ColorParticleGroup::GlobalSettings{
