@@ -112,6 +112,8 @@ void PreconditionedConjugateGradient(LinearOp &A,
     float r_dot_z_new = Dot<float>(r, z, buffer_);
     float r_sqr = r.View().NormSqr();
 
+    //    printf("r_sqr: %f\n", r_sqr);
+
     if (r_sqr < 1e-16f * float(b.size)) {
       printf("PCG solved in %d steps\n", cnt);
       break;

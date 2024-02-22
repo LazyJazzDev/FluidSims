@@ -19,6 +19,7 @@ struct GUISettings {
                 p.z > 0.05f && p.z < 0.95f);
       };
   bool multithreaded{false};
+  float render_delta_t{0.01f};
 };
 
 class GUIApp : public GameX::Base::Application {

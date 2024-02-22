@@ -536,7 +536,35 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
   }
 }
 
+struct ParticleSpeedOp {
+  __host__ __device__ float operator()(const Particle &p) {
+    return glm::length(p.velocity);
+  }
+};
+
 void FluidCore::Update(float delta_time) {
+  //  SubStep(sim_settings_.delta_t);
+  //  return;
+  while (delta_time > 0.0f) {
+    float sub_step = std::min(delta_time, sim_settings_.delta_t);
+
+    float max_particle_speed = thrust::transform_reduce(
+        particles_.begin(), particles_.end(), ParticleSpeedOp(), 0.0f,
+        thrust::maximum<float>());
+
+    if (sim_settings_.delta_x < sub_step * max_particle_speed * 5.0f) {
+      sub_step = sim_settings_.delta_x / (max_particle_speed * 5.0f);
+    }
+    printf("delta_x: %f max_speed: %f\n", sim_settings_.delta_x,
+           max_particle_speed);
+
+    SubStep(sub_step);
+    delta_time -= sub_step;
+  }
+}
+
+void FluidCore::SubStep(float delta_time) {
+  printf("substep: %f ms\n", delta_time);
   DeviceClock device_clock;
 
   //    pressure_.Clear();
@@ -612,9 +640,9 @@ void FluidCore::Update(float delta_time) {
   device_clock.Record("Calculate Mass Sample");
 
   PreparePoissonEquationKernel<<<CALL_SHAPE(grid_cell_header_.TotalCells())>>>(
-      mass_sample_.View(), velocity_.View(), level_set_.View(),
-      sim_settings_.delta_t, sim_settings_.rho, sim_settings_.delta_x,
-      operator_.adjacent_info.View(), b_.View());
+      mass_sample_.View(), velocity_.View(), level_set_.View(), delta_time,
+      sim_settings_.rho, sim_settings_.delta_x, operator_.adjacent_info.View(),
+      b_.View());
 
   device_clock.Record("Prepare Poisson Equation");
 
@@ -622,7 +650,7 @@ void FluidCore::Update(float delta_time) {
 
   //  Jacobi(operator_, b_, pressure_, 3000);
 
-  //  MultiGrid(operator_, b_, pressure_, 10);
+  //    MultiGrid(operator_, b_, pressure_, 10);
 
   MultiGridPCG(operator_, b_, pressure_);
 
@@ -631,17 +659,17 @@ void FluidCore::Update(float delta_time) {
   UpdateVelocityFieldKernel<<<CALL_SHAPE(
       velocity_.UGrid().Header().TotalCells())>>>(
       pressure_.View(), level_set_.View(), velocity_.UView(),
-      valid_sample_.UView(), sim_settings_.delta_t, sim_settings_.rho,
+      valid_sample_.UView(), delta_time, sim_settings_.rho,
       sim_settings_.delta_x, 0);
   UpdateVelocityFieldKernel<<<CALL_SHAPE(
       velocity_.VGrid().Header().TotalCells())>>>(
       pressure_.View(), level_set_.View(), velocity_.VView(),
-      valid_sample_.VView(), sim_settings_.delta_t, sim_settings_.rho,
+      valid_sample_.VView(), delta_time, sim_settings_.rho,
       sim_settings_.delta_x, 1);
   UpdateVelocityFieldKernel<<<CALL_SHAPE(
       velocity_.WGrid().Header().TotalCells())>>>(
       pressure_.View(), level_set_.View(), velocity_.WView(),
-      valid_sample_.WView(), sim_settings_.delta_t, sim_settings_.rho,
+      valid_sample_.WView(), delta_time, sim_settings_.rho,
       sim_settings_.delta_x, 2);
 
   device_clock.Record("Update Velocity Field");

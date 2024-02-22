@@ -40,7 +40,7 @@ void GUIApp::OnInit() {
   //    entity_ = scene_->CreateEntity(particle_model_.get());
   color_particle_group_ =
       scene_->CreateParticleGroup<GameX::Graphics::ColorParticleGroup>(
-          particle_model_.get(), 1048576 * 8);
+          particle_model_.get(), 1048576 * 36);
 
   color_particle_group_->SetGlobalSettings(
       GameX::Graphics::ColorParticleGroup::GlobalSettings{
@@ -90,7 +90,7 @@ void GUIApp::OnUpdate() {
   camera_controller_->Update(delta_time);
 
   if (!gui_settings_.multithreaded) {
-    instance_->Update(sim_settings_.delta_t);
+    instance_->Update(gui_settings_.render_delta_t);
     particle_updated_ = true;
   }
 
@@ -169,7 +169,7 @@ void GUIApp::ScrollCallback(double xoffset, double yoffset) {
 
 void GUIApp::LogicThread() {
   while (!thread_exit_) {
-    instance_->Update(sim_settings_.delta_t);
+    instance_->Update(gui_settings_.render_delta_t);
     {
       std::unique_lock<std::mutex> lock(render_resource_mutex_);
       if (thread_exit_) {

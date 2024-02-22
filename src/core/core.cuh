@@ -73,6 +73,7 @@ class FluidCore : public FluidInterface {
   void Update(float delta_time) override;
 
  private:
+  void SubStep(float delta_time);
   SimSettings sim_settings_;
   glm::ivec3 grid_size_;
   GridHeader grid_center_header_;
