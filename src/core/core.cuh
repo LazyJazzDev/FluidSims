@@ -44,7 +44,7 @@ struct AdjacentOp : public LinearOp, public JacobiOp {
   GridView<AdjacentInfo> adjacent_info;
 };
 
-struct FluidOperator : public LinearOp, public JacobiOp, public MultiGridOp {
+struct FluidOperator : public JacobiOp, public MultiGridPCGOp {
   FluidOperator(GridHeader center_header = GridHeader{}) {
     adjacent_info = Grid<AdjacentInfo>(center_header);
   }

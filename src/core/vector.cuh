@@ -42,6 +42,11 @@ struct VectorView {
                                     thrust::device_pointer_cast(buffer + size),
                                     SqaureOp<Ty>{}, Ty{}, thrust::plus<Ty>());
   }
+
+  void Clear(Ty content = Ty{}) {
+    thrust::fill(thrust::device_pointer_cast(buffer),
+                 thrust::device_pointer_cast(buffer + size), content);
+  }
 };
 
 template <class Ty>

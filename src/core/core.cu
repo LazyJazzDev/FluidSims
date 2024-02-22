@@ -622,7 +622,9 @@ void FluidCore::Update(float delta_time) {
 
   //  Jacobi(operator_, b_, pressure_, 3000);
 
-  MultiGrid(operator_, b_, pressure_, 10);
+  //  MultiGrid(operator_, b_, pressure_, 10);
+
+  MultiGridPCG(operator_, b_, pressure_);
 
   device_clock.Record("Solve Poisson Equation");
 

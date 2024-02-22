@@ -33,3 +33,15 @@ void MultiGrid(MultiGridOp &A,
                VectorView<float> b,
                VectorView<float> x,
                int iterations = 10);
+
+void PreconditionedConjugateGradient(LinearOp &A,
+                                     LinearOp &M_inv,
+                                     VectorView<float> b,
+                                     VectorView<float> x);
+
+struct MultiGridPCGOp : public MultiGridOp, public LinearOp {};
+
+void MultiGridPCG(MultiGridPCGOp &A,
+                  VectorView<float> b,
+                  VectorView<float> x,
+                  int iterations = 5);
