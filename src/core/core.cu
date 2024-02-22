@@ -618,7 +618,9 @@ void FluidCore::Update(float delta_time) {
 
   device_clock.Record("Prepare Poisson Equation");
 
-  ConjugateGradient(operator_, b_, pressure_);
+  //    ConjugateGradient(operator_, b_, pressure_);
+
+  Jacobi(operator_, b_, pressure_, 3000);
 
   device_clock.Record("Solve Poisson Equation");
 
@@ -690,8 +692,71 @@ __global__ void PoissonOperatorKernel(GridView<AdjacentInfo> adjacent_infos,
   }
 }
 
-void FluidOperator::operator()(VectorView<float> x, VectorView<float> y) {
+__global__ void PoissonLUOperatorKernel(GridView<AdjacentInfo> adjacent_infos,
+                                        GridView<float> pressure,
+                                        GridView<float> result) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < result.Header().TotalCells()) {
+    auto index3 = result.Header().Index(id);
+    auto adjacent_info = adjacent_infos[id];
+    float res = 0.0f;
+    for (int dim = 0; dim < 3; dim++) {
+      for (int edge = 0; edge < 2; edge++) {
+        glm::ivec3 offset{0};
+        offset[dim] = edge * 2 - 1;
+        auto neighbor_index3 = index3 + offset;
+        if (pressure.LegalIndex(neighbor_index3)) {
+          res += adjacent_info.edge[dim][edge] * pressure(neighbor_index3);
+        }
+      }
+    }
+    result[id] = res;
+  }
+}
+
+__global__ void PoissonDInvOperatorKernel(GridView<AdjacentInfo> adjacent_infos,
+                                          GridView<float> pressure,
+                                          GridView<float> result) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < result.Header().TotalCells()) {
+    float local = adjacent_infos[id].local;
+    float res;
+    if (local != 0.0f) {
+      res = pressure[id] / local;
+    } else {
+      res = 0.0f;
+    }
+    result[id] = res;
+  }
+}
+
+void AdjacentOp::operator()(VectorView<float> x, VectorView<float> y) {
   PoissonOperatorKernel<<<CALL_SHAPE(adjacent_info.Header().TotalCells())>>>(
-      adjacent_info.View(), GridView<float>(adjacent_info.Header(), x.buffer),
+      adjacent_info, GridView<float>(adjacent_info.Header(), x.buffer),
       GridView<float>(adjacent_info.Header(), y.buffer));
+}
+
+void AdjacentOp::LU(VectorView<float> x, VectorView<float> y) {
+  PoissonLUOperatorKernel<<<CALL_SHAPE(adjacent_info.Header().TotalCells())>>>(
+      adjacent_info, GridView<float>(adjacent_info.Header(), x.buffer),
+      GridView<float>(adjacent_info.Header(), y.buffer));
+}
+
+void AdjacentOp::D_inv(VectorView<float> x, VectorView<float> y) {
+  PoissonDInvOperatorKernel<<<CALL_SHAPE(
+      adjacent_info.Header().TotalCells())>>>(
+      adjacent_info, GridView<float>(adjacent_info.Header(), x.buffer),
+      GridView<float>(adjacent_info.Header(), y.buffer));
+}
+
+void FluidOperator::operator()(VectorView<float> x, VectorView<float> y) {
+  AdjacentOp{adjacent_info}(x, y);
+}
+
+void FluidOperator::LU(VectorView<float> x, VectorView<float> y) {
+  AdjacentOp{adjacent_info}.LU(x, y);
+}
+
+void FluidOperator::D_inv(VectorView<float> x, VectorView<float> y) {
+  AdjacentOp{adjacent_info}.D_inv(x, y);
 }

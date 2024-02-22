@@ -1,6 +1,8 @@
 #pragma once
+
 #include "core/grids.cuh"
 #include "core/interface.h"
+#include "core/linear_solvers.cuh"
 #include "core/vector.cuh"
 
 #define BLOCK_SIZE 256
@@ -26,20 +28,41 @@ struct AdjacentInfo {
   }
 };
 
-struct FluidOperator {
+struct AdjacentOp : public LinearOp, public JacobiOp {
+  AdjacentOp(Grid<AdjacentInfo> &grid) : adjacent_info(grid.View()) {
+  }
+
+  void operator()(VectorView<float> x, VectorView<float> y) override;
+
+  void LU(VectorView<float> x, VectorView<float> y) override;
+
+  void D_inv(VectorView<float> x, VectorView<float> y) override;
+
+  GridView<AdjacentInfo> adjacent_info;
+};
+
+struct FluidOperator : public LinearOp, public JacobiOp {
   FluidOperator(GridHeader center_header = GridHeader{}) {
     adjacent_info = Grid<AdjacentInfo>(center_header);
   }
+
   Grid<AdjacentInfo> adjacent_info;
 
-  void operator()(VectorView<float> x, VectorView<float> y);
+  void operator()(VectorView<float> x, VectorView<float> y) override;
+
+  void LU(VectorView<float> x, VectorView<float> y) override;
+
+  void D_inv(VectorView<float> x, VectorView<float> y) override;
 };
 
 class FluidCore : public FluidInterface {
  public:
   explicit FluidCore(SimSettings sim_settings);
+
   void SetParticles(const std::vector<glm::vec3> &positions) override;
+
   [[nodiscard]] std::vector<glm::vec3> GetParticles() const override;
+
   void Update(float delta_time) override;
 
  private:

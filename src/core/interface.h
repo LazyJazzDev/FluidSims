@@ -5,7 +5,7 @@
 struct SimSettings {
   glm::ivec3 grid_size{64};
   float delta_x{1.0f / 64.0f};
-  float delta_t{1e-3f};
+  float delta_t{1e-2f};
   float rho{1.0f};
 };
 

@@ -59,7 +59,8 @@ struct GridHeader {
 template <class Ty>
 class GridView {
  public:
-  GridView(GridHeader header, Ty *buffer) : header_(header), buffer_(buffer) {
+  GridView(GridHeader header = GridHeader(), Ty *buffer = nullptr)
+      : header_(header), buffer_(buffer) {
   }
 
   __device__ Ty &operator[](int i) {
