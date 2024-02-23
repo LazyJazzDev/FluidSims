@@ -51,12 +51,9 @@ void Jacobi(JacobiOp &A,
 void MultiGridCore(VectorView<float> x,
                    VectorView<float> b,
                    const std::vector<MultiGridLevel> &levels,
-                   int iterations,
                    int level_index = 0) {
   auto &level = levels[level_index];
-  for (int i = 0; i < iterations; i++) {
-    level.pre_smooth(b, x);
-  }
+  level.pre_smooth(b, x);
   if (level_index < levels.size() - 1) {
     Vector<float> residual(b.size);
     level.linear_op(x, residual);
@@ -64,21 +61,19 @@ void MultiGridCore(VectorView<float> x,
     auto down_sampled_residual = level.down_sample(residual);
     Vector<float> error(down_sampled_residual.Size());
     MultiGridCore(error.View(), down_sampled_residual.View(), levels,
-                  iterations, level_index + 1);
+                  level_index + 1);
     auto up_sampled_error = level.up_sample(error.View());
     Add(x, up_sampled_error.View(), x);
   }
-  for (int i = 0; i < iterations; i++) {
-    level.post_smooth(b, x);
-  }
+  level.post_smooth(b, x);
 }
 
 void MultiGrid(MultiGridOp &A,
                VectorView<float> b,
                VectorView<float> x,
                int iterations) {
-  auto levels = A.MultiGridLevels();
-  MultiGridCore(x, b, levels, iterations);
+  auto levels = A.MultiGridLevels(iterations);
+  MultiGridCore(x, b, levels);
 }
 
 void PreconditionedConjugateGradient(LinearOp &A,

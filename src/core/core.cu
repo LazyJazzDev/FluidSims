@@ -648,9 +648,9 @@ void FluidCore::SubStep(float delta_time) {
 
   //    ConjugateGradient(operator_, b_, pressure_);
 
-  //  Jacobi(operator_, b_, pressure_, 3000);
+  //  Jacobi(operator_, b_, pressure_, 500);
 
-  //    MultiGrid(operator_, b_, pressure_, 10);
+  //      MultiGrid(operator_, b_, pressure_, 10);
 
   MultiGridPCG(operator_, b_, pressure_);
 
@@ -857,7 +857,7 @@ __global__ void DownSampleAdjacentInfoKernel(
   }
 }
 
-std::vector<MultiGridLevel> FluidOperator::MultiGridLevels() {
+std::vector<MultiGridLevel> FluidOperator::MultiGridLevels(int iterations) {
   std::vector<MultiGridLevel> levels;
 
   GridView<AdjacentInfo> current_adjacent_info = adjacent_info.View();
@@ -871,15 +871,15 @@ std::vector<MultiGridLevel> FluidOperator::MultiGridLevels() {
                                               VectorView<float> y) {
       AdjacentOp{current_adjacent_info}(x, y);
     };
-    level.pre_smooth = [current_adjacent_info](VectorView<float> x,
-                                               VectorView<float> y) {
+    level.pre_smooth = [current_adjacent_info, iterations](
+                           VectorView<float> x, VectorView<float> y) {
       auto adj_op = AdjacentOp{current_adjacent_info};
-      Jacobi(adj_op, x, y, 1);
+      Jacobi(adj_op, x, y, iterations);
     };
-    level.post_smooth = [current_adjacent_info](VectorView<float> x,
-                                                VectorView<float> y) {
+    level.post_smooth = [current_adjacent_info, iterations](
+                            VectorView<float> x, VectorView<float> y) {
       auto adj_op = AdjacentOp{current_adjacent_info};
-      Jacobi(adj_op, x, y, 1);
+      Jacobi(adj_op, x, y, iterations);
     };
     auto header = current_adjacent_info.Header();
 

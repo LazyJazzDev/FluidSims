@@ -20,6 +20,7 @@ struct GUISettings {
       };
   bool multithreaded{false};
   float render_delta_t{0.01f};
+  int initial_type = 1;  // 0 aligned, 1 random
 };
 
 class GUIApp : public GameX::Base::Application {

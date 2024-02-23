@@ -19,7 +19,7 @@ struct MultiGridLevel {
 };
 
 struct MultiGridOp {
-  virtual std::vector<MultiGridLevel> MultiGridLevels() = 0;
+  virtual std::vector<MultiGridLevel> MultiGridLevels(int iterations) = 0;
 };
 
 void ConjugateGradient(LinearOp &A, VectorView<float> b, VectorView<float> x);

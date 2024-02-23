@@ -1,5 +1,6 @@
 #include "gui/gui.h"
 
+#include "gui/sobol.h"
 #include "random"
 
 GUIApp::GUIApp(const AppSettings &settings,
@@ -60,18 +61,40 @@ void GUIApp::OnInit() {
 
   instance_ = CreateFluidLogicInstance(sim_settings_);
 
+  auto seed_file_path = GameX::Base::AssetProbe::PublicInstance()->ProbeAsset(
+      "model/new-joe-kuo-7.21201");
+
   std::vector<glm::vec3> positions;
 
-  for (int x = 0; x < sim_settings_.grid_size.x * 2; x++) {
-    for (int y = 0; y < sim_settings_.grid_size.y * 2; y++) {
-      for (int z = 0; z < sim_settings_.grid_size.z * 2; z++) {
-        glm::vec3 p =
-            (glm::vec3{x, y, z} + 0.5f) * sim_settings_.delta_x * 0.5f;
-        if (gui_settings_.initial_particle_range(p)) {
-          positions.push_back(p);
+  if (gui_settings_.initial_type == 0) {
+    for (int x = 0; x < sim_settings_.grid_size.x * 2; x++) {
+      for (int y = 0; y < sim_settings_.grid_size.y * 2; y++) {
+        for (int z = 0; z < sim_settings_.grid_size.z * 2; z++) {
+          glm::vec3 p =
+              (glm::vec3{x, y, z} + 0.5f) * sim_settings_.delta_x * 0.5f;
+          if (gui_settings_.initial_particle_range(p)) {
+            positions.push_back(p);
+          }
         }
       }
     }
+  } else if (gui_settings_.initial_type == 1) {
+    auto sample_point_num = sim_settings_.grid_size.x *
+                            sim_settings_.grid_size.y *
+                            sim_settings_.grid_size.z * 8;
+    double **points = sobol_points(sample_point_num, 3, seed_file_path.c_str());
+
+    for (int i = 0; i < sample_point_num; i++) {
+      auto pos = glm::vec3{points[i][0], points[i][1], points[i][2]};
+      if (gui_settings_.initial_particle_range(pos)) {
+        positions.push_back(pos);
+      }
+    }
+
+    for (int i = 0; i < sample_point_num; i++) {
+      delete[] points[i];
+    }
+    delete[] points;
   }
 
   instance_->SetParticles(positions);

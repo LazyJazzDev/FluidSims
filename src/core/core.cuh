@@ -59,7 +59,7 @@ struct FluidOperator : public JacobiOp, public MultiGridPCGOp {
 
   void D_inv(VectorView<float> x, VectorView<float> y) override;
 
-  std::vector<MultiGridLevel> MultiGridLevels() override;
+  std::vector<MultiGridLevel> MultiGridLevels(int iterations) override;
 };
 
 class FluidCore : public FluidInterface {
