@@ -53,6 +53,7 @@ FluidCore::FluidCore(SimSettings sim_settings)
   velocity_bak_ = MACGrid<float>(grid_cell_header_);
   transfer_weight_bak_ = MACGrid<float>(grid_cell_header_);
   valid_sample_ = MACGrid<bool>(grid_cell_header_);
+  valid_sample_bak_ = MACGrid<bool>(grid_cell_header_);
 
   mass_sample_ = MACGrid<float>(grid_cell_header_);
 }
@@ -188,13 +189,13 @@ __global__ void ConstructLevelSetKernel(const Particle *particles,
   }
 }
 
-__global__ void Particle2GridTransferKernel(
-    const Particle *particles,
-    const int *lower_bound_indices,
-    GridHeader center_header,
-    GridHeader grid_point_header,
-    MACGridView<float> vel_grids,
-    MACGridView<float> transfer_weights) {
+__global__ void Particle2GridTransferKernel(const Particle *particles,
+                                            const int *lower_bound_indices,
+                                            GridHeader center_header,
+                                            GridHeader grid_point_header,
+                                            MACGridView<float> vel_grids,
+                                            MACGridView<float> transfer_weights,
+                                            MACGridView<bool> valid_sample) {
   int id = blockIdx.x * blockDim.x + threadIdx.x;
   float accum_weights[3]{};
   float accum_weighted_values[3]{};
@@ -235,11 +236,14 @@ __global__ void Particle2GridTransferKernel(
 
     for (int i = 0; i < 3; i++) {
       auto vel = 0.0f;
+      bool valid = false;
       if (accum_weights[i] > 0.0f) {
         vel = accum_weighted_values[i] / accum_weights[i];
+        valid = true;
       }
       if (vel_grids.grids[i].LegalIndex(index3)) {
         vel_grids.grids[i](index3) = vel;
+        valid_sample.grids[i](index3) = valid;
         transfer_weights.grids[i](index3) = accum_weights[i];
       }
     }
@@ -248,9 +252,9 @@ __global__ void Particle2GridTransferKernel(
 
 __global__ void ExtrapolateKernel(GridHeader grid_point_header,
                                   MACGridView<float> vel_grids,
-                                  MACGridView<float> transfer_weights,
                                   MACGridView<float> vel_grids_new,
-                                  MACGridView<float> transfer_weights_new) {
+                                  MACGridView<bool> valid_sample,
+                                  MACGridView<bool> valid_sample_new) {
   int id = blockIdx.x * blockDim.x + threadIdx.x;
   if (id < grid_point_header.TotalCells()) {
     auto index3 = grid_point_header.Index(id);
@@ -261,12 +265,14 @@ __global__ void ExtrapolateKernel(GridHeader grid_point_header,
     for (auto dv : dvs) {
       auto neighbor_index3 = index3 + dv;
       for (int i = 0; i < 3; i++) {
-        if (vel_grids.grids[i].LegalIndex(neighbor_index3)) {
-          auto neighbor_weight = transfer_weights.grids[i](neighbor_index3);
-          auto neighbor_vel = vel_grids.grids[i](neighbor_index3);
-          if (neighbor_weight > 0.0f) {
-            neighbor_weights[i] += neighbor_weight;
-            neighbor_vels[i] += neighbor_weight * neighbor_vel;
+        if (valid_sample.grids[i].LegalIndex(neighbor_index3)) {
+          if (valid_sample.grids[i](neighbor_index3)) {
+            auto neighbor_vel = vel_grids.grids[i](neighbor_index3);
+            float neighbor_weight = 1.0f;
+            if (neighbor_weight > 0.0f) {
+              neighbor_weights[i] += neighbor_weight;
+              neighbor_vels[i] += neighbor_weight * neighbor_vel;
+            }
           }
         }
       }
@@ -274,11 +280,11 @@ __global__ void ExtrapolateKernel(GridHeader grid_point_header,
 
     for (int i = 0; i < 3; i++) {
       if (neighbor_weights[i] > 0.0f) {
-        if (transfer_weights_new.grids[i].LegalIndex(index3)) {
-          if (transfer_weights_new.grids[i](index3) == 0.0f) {
+        if (valid_sample.grids[i].LegalIndex(index3)) {
+          if (!valid_sample.grids[i](index3)) {
             vel_grids_new.grids[i](index3) =
                 neighbor_vels[i] / neighbor_weights[i];
-            transfer_weights_new.grids[i](index3) = neighbor_weights[i];
+            valid_sample_new.grids[i](index3) = true;
           }
         }
       }
@@ -487,46 +493,32 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
           vel_field.grids[dim].Header().NearestGridPoint(particle.position);
       auto grid_pos =
           vel_field.grids[dim].Header().World2Grid(particle.position);
-      glm::vec3 accum_weighted_vel_normal{0.0f};
-      float accum_weight_normal = 0.0f;
-      glm::vec3 accum_weighted_vel_tangential{0.0f};
-      float accum_weight_tangential = 0.0f;
-
-      glm::vec3 axis{0.0f};
-      axis[dim] = 1.0f;
-
-      glm::vec3 normal_component = glm::dot(normal, axis) * normal;
-      glm::vec3 tangential_component = axis - normal_component;
+      float accum_weighted_vel{0.0f};
+      float accum_weight = 0.0f;
 
       for (int dx = -1; dx <= 1; dx++) {
         for (int dy = -1; dy <= 1; dy++) {
           for (int dz = -1; dz <= 1; dz++) {
             auto index3 = nearest_point + glm::ivec3{dx, dy, dz};
             if (vel_field.grids[dim].LegalIndex(index3)) {
-              if (valid_sample.grids[dim](index3)) {
-                auto weight = KernelFunction(glm::vec3{index3} - grid_pos) *
-                              mass.grids[dim](index3);
-                if (weight > 0.0f) {
-                  auto vel = vel_field.grids[dim](index3);
-                  auto m = mass.grids[dim](index3);
-                  accum_weighted_vel_tangential +=
-                      m * weight * vel * tangential_component;
-                  accum_weight_tangential += mass.grids[dim](index3) * weight;
-                  accum_weighted_vel_normal +=
-                      weight * vel * normal_component * m / unit_mass;
-                  accum_weight_normal += weight;
+              auto weight = KernelFunction(glm::vec3{index3} - grid_pos);
+              if (weight > 0.0f) {
+                auto vel = vel_field.grids[dim](index3);
+                if (!valid_sample.grids[dim](index3) ||
+                    InsideObstacle(
+                        vel_field.grids[dim].Header().Grid2World(index3))) {
+                  vel = 0.0f;
                 }
+                accum_weighted_vel += weight * vel;
+                accum_weight += weight;
               }
             }
           }
         }
       }
-      if (accum_weight_normal > 0.0f) {
-        resulting_vel += accum_weighted_vel_normal / accum_weight_normal;
-      }
-      if (accum_weight_tangential > 0.0f) {
-        resulting_vel +=
-            accum_weighted_vel_tangential / accum_weight_tangential;
+
+      if (accum_weight > 0.0f) {
+        resulting_vel[dim] += accum_weighted_vel / accum_weight;
       }
     }
 
@@ -612,18 +604,18 @@ void FluidCore::SubStep(float delta_time) {
   Particle2GridTransferKernel<<<CALL_SHAPE(grid_point_header_.TotalCells())>>>(
       particles_.data().get(), lower_bound_indices.data().get(),
       grid_center_header_, grid_point_header_, velocity_.View(),
-      transfer_weight_.View());
+      transfer_weight_.View(), valid_sample_.View());
   device_clock.Record("Particle 2 Grid Transfer");
 
   velocity_bak_ = velocity_;
-  transfer_weight_bak_ = transfer_weight_;
+  valid_sample_bak_ = valid_sample_;
 
   for (int i = 0; i < 5; i++) {
     ExtrapolateKernel<<<CALL_SHAPE(grid_point_header_.TotalCells())>>>(
-        grid_point_header_, velocity_.View(), transfer_weight_.View(),
-        velocity_bak_.View(), transfer_weight_bak_.View());
+        grid_point_header_, velocity_.View(), velocity_bak_.View(),
+        valid_sample_.View(), valid_sample_bak_.View());
     velocity_ = velocity_bak_;
-    transfer_weight_ = transfer_weight_bak_;
+    valid_sample_ = valid_sample_bak_;
   }
 
   device_clock.Record("Velocity Extrapolate");
@@ -649,11 +641,11 @@ void FluidCore::SubStep(float delta_time) {
 
   //    ConjugateGradient(operator_, b_, pressure_);
 
-  //    Jacobi(operator_, b_, pressure_, 30);
+  Jacobi(operator_, b_, pressure_, 30);
 
-  MultiGrid(operator_, b_, pressure_, 30);
+  //  MultiGrid(operator_, b_, pressure_, 30);
 
-  //  MultiGridPCG(operator_, b_, pressure_);
+  //    MultiGridPCG(operator_, b_, pressure_);
 
   device_clock.Record("Solve Poisson Equation");
 
@@ -674,6 +666,19 @@ void FluidCore::SubStep(float delta_time) {
       sim_settings_.delta_x, 2);
 
   device_clock.Record("Update Velocity Field");
+
+  velocity_bak_ = velocity_;
+  valid_sample_bak_ = valid_sample_;
+
+  for (int i = 0; i < 5; i++) {
+    ExtrapolateKernel<<<CALL_SHAPE(grid_point_header_.TotalCells())>>>(
+        grid_point_header_, velocity_.View(), velocity_bak_.View(),
+        valid_sample_.View(), valid_sample_bak_.View());
+    velocity_ = velocity_bak_;
+    valid_sample_ = valid_sample_bak_;
+  }
+
+  device_clock.Record("Velocity Extrapolate (Post Solve)");
 
   Grid2ParticleTransferKernel<<<CALL_SHAPE(particles_.size())>>>(
       particles_.data().get(), velocity_.View(), mass_sample_.View(),

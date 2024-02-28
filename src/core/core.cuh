@@ -74,6 +74,7 @@ class FluidCore : public FluidInterface {
 
  private:
   void SubStep(float delta_time);
+
   SimSettings sim_settings_;
   glm::ivec3 grid_size_;
   GridHeader grid_center_header_;
@@ -92,6 +93,7 @@ class FluidCore : public FluidInterface {
   MACGrid<float> velocity_bak_;
   MACGrid<float> mass_sample_;
   MACGrid<bool> valid_sample_;
+  MACGrid<bool> valid_sample_bak_;
 
   thrust::device_vector<Particle> particles_;
 };
