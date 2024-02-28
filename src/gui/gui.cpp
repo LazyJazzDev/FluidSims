@@ -17,7 +17,7 @@ GUIApp::GUIApp(const AppSettings &settings,
 
   container_model_ = Renderer()->CreateStaticModel("model/container.obj");
 
-  particle_model_ = Renderer()->CreateStaticModel("models/sphere.obj");
+  particle_model_ = Renderer()->CreateStaticModel("model/particle.obj");
   envmap_image_ = Renderer()->CreateImage("textures/envmap.hdr");
 
   //  glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
