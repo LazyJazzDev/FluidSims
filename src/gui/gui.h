@@ -19,7 +19,7 @@ struct GUISettings {
                 p.z > 0.05f && p.z < 0.95f);
       };
   bool multithreaded{false};
-  float render_delta_t{0.01f};
+  float render_delta_t{0.03f};
   int initial_type = 1;  // 0 aligned, 1 random
 };
 

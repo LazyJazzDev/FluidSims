@@ -543,20 +543,21 @@ struct ParticleSpeedOp {
 };
 
 void FluidCore::Update(float delta_time) {
-  //  SubStep(sim_settings_.delta_t);
-  //  return;
-  while (delta_time > 0.0f) {
+  while (delta_time > 1e-6f) {
     float sub_step = std::min(delta_time, sim_settings_.delta_t);
 
-    float max_particle_speed = thrust::transform_reduce(
-        particles_.begin(), particles_.end(), ParticleSpeedOp(), 0.0f,
-        thrust::maximum<float>());
+    if (sim_settings_.alternative_time_step) {
+      float max_particle_speed = thrust::transform_reduce(
+          particles_.begin(), particles_.end(), ParticleSpeedOp(), 0.0f,
+          thrust::maximum<float>());
 
-    if (sim_settings_.delta_x < sub_step * max_particle_speed * 5.0f) {
-      sub_step = sim_settings_.delta_x / (max_particle_speed * 5.0f);
+      if (sim_settings_.delta_x < sub_step * max_particle_speed * 5.0f) {
+        sub_step = sim_settings_.delta_x / (max_particle_speed * 5.0f);
+      }
+
+      printf("delta_x: %f max_speed: %f\n", sim_settings_.delta_x,
+             max_particle_speed);
     }
-    printf("delta_x: %f max_speed: %f\n", sim_settings_.delta_x,
-           max_particle_speed);
 
     SubStep(sub_step);
     delta_time -= sub_step;
@@ -648,11 +649,11 @@ void FluidCore::SubStep(float delta_time) {
 
   //    ConjugateGradient(operator_, b_, pressure_);
 
-  //  Jacobi(operator_, b_, pressure_, 500);
+  //    Jacobi(operator_, b_, pressure_, 30);
 
-  //      MultiGrid(operator_, b_, pressure_, 10);
+  MultiGrid(operator_, b_, pressure_, 30);
 
-  MultiGridPCG(operator_, b_, pressure_);
+  //  MultiGridPCG(operator_, b_, pressure_);
 
   device_clock.Record("Solve Poisson Equation");
 

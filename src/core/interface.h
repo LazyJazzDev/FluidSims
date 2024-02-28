@@ -3,10 +3,11 @@
 #include "vector"
 
 struct SimSettings {
-  glm::ivec3 grid_size{100};
-  float delta_x{1.0f / 100.0f};
-  float delta_t{1e-2f};
+  glm::ivec3 grid_size{128};
+  float delta_x{1.0f / 128.0f};
+  float delta_t{1.5e-3f};
   float rho{1.0f};
+  bool alternative_time_step{false};
 };
 
 class FluidInterface {
