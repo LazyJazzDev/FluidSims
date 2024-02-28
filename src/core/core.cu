@@ -4,9 +4,8 @@
 #include "core/device_clock.cuh"
 #include "core/linear_solvers.cuh"
 
-template <class VectorType>
-__device__ float KernelFunction(const VectorType &v) {
-  auto len = glm::length(v);
+__device__ float KernelFunction(float v) {
+  auto len = abs(v);
   if (len < 0.5f) {
     return 0.75f - len * len;
   } else if (len < 1.5f) {
@@ -15,17 +14,8 @@ __device__ float KernelFunction(const VectorType &v) {
   return 0.0f;
 }
 
-template <class VectorType>
-__device__ glm::vec3 KernelFunctionGradient(const VectorType &v) {
-  auto len = glm::length(v);
-  if (len < 1e-6f) {
-    return glm::vec3{0.0f};
-  } else if (len < 0.5f) {
-    return -2.0f * len * glm::normalize(v);
-  } else if (len < 1.5f) {
-    return -(1.5f - len) * glm::normalize(v);
-  }
-  return glm::vec3{0.0f};
+__device__ float KernelFunction(const glm::vec3 &v) {
+  return KernelFunction(v.x) * KernelFunction(v.y) * KernelFunction(v.z);
 }
 
 FluidInterface *CreateFluidLogicInstance(const SimSettings &sim_settings) {
@@ -500,26 +490,25 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
         for (int dy = -1; dy <= 1; dy++) {
           for (int dz = -1; dz <= 1; dz++) {
             auto index3 = nearest_point + glm::ivec3{dx, dy, dz};
-            if (vel_field.grids[dim].LegalIndex(index3)) {
-              auto weight = KernelFunction(glm::vec3{index3} - grid_pos);
-              if (weight > 0.0f) {
-                auto vel = vel_field.grids[dim](index3);
+            auto weight = KernelFunction(glm::vec3{index3} - grid_pos);
+            float vel = 0.0f;
+            if (weight > 0.0f) {
+              if (valid_sample.grids[dim].LegalIndex(index3)) {
+                vel = vel_field.grids[dim](index3);
                 if (!valid_sample.grids[dim](index3) ||
                     InsideObstacle(
                         vel_field.grids[dim].Header().Grid2World(index3))) {
                   vel = 0.0f;
                 }
-                accum_weighted_vel += weight * vel;
-                accum_weight += weight;
               }
             }
+
+            accum_weighted_vel += weight * vel;
           }
         }
       }
 
-      if (accum_weight > 0.0f) {
-        resulting_vel[dim] += accum_weighted_vel / accum_weight;
-      }
+      resulting_vel[dim] += accum_weighted_vel;
     }
 
     particle.velocity = resulting_vel;
