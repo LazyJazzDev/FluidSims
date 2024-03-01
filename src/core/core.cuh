@@ -11,6 +11,7 @@
 struct Particle {
   glm::vec3 position;
   glm::vec3 velocity;
+  glm::mat3 C;
 };
 
 struct AdjacentInfo {

@@ -210,13 +210,13 @@ __global__ void Particle2GridTransferKernel(const Particle *particles,
           for (int i = start; i < end; i++) {
             auto particle = particles[i];
             for (int j = 0; j < 3; j++) {
-              auto diff =
-                  vel_grids.grids[j].Header().World2Grid(particle.position) -
-                  grid_pos;
+              auto diff = grid_pos - vel_grids.grids[j].Header().World2Grid(
+                                         particle.position);
               auto weight = KernelFunction(diff);
               if (weight > 0.0f) {
                 accum_weights[j] += weight;
-                accum_weighted_values[j] += weight * particle.velocity[j];
+                accum_weighted_values[j] +=
+                    weight * (particle.velocity + particle.C * diff)[j];
               }
             }
           }
@@ -466,10 +466,9 @@ __global__ void MixVelocityFieldKernel(GridView<float> vel_field,
 
 __global__ void Grid2ParticleTransferKernel(Particle *particles,
                                             MACGridView<float> vel_field,
-                                            MACGridView<float> mass,
                                             MACGridView<bool> valid_sample,
-                                            float unit_mass,
-                                            int num_particle) {
+                                            int num_particle,
+                                            bool apic) {
   int id = blockIdx.x * blockDim.x + threadIdx.x;
   if (id < num_particle) {
     Particle particle = particles[id];
@@ -477,6 +476,7 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
     glm::vec3 normal = NearestSurfaceNormal(particle.position);
 
     glm::vec3 resulting_vel{0.0f};
+    glm::mat3 resulting_C{0.0f};
 
     for (int dim = 0; dim < 3; dim++) {
       auto nearest_point =
@@ -484,14 +484,17 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
       auto grid_pos =
           vel_field.grids[dim].Header().World2Grid(particle.position);
       float accum_weighted_vel{0.0f};
-      float accum_weight = 0.0f;
+      glm::vec3 unit_vel{0.0f};
+      unit_vel[dim] = 1.0f;
 
       for (int dx = -1; dx <= 1; dx++) {
         for (int dy = -1; dy <= 1; dy++) {
           for (int dz = -1; dz <= 1; dz++) {
             auto index3 = nearest_point + glm::ivec3{dx, dy, dz};
-            auto weight = KernelFunction(glm::vec3{index3} - grid_pos);
+            auto diff = glm::vec3{index3} - grid_pos;
+            auto weight = KernelFunction(diff);
             float vel = 0.0f;
+
             if (weight > 0.0f) {
               if (valid_sample.grids[dim].LegalIndex(index3)) {
                 vel = vel_field.grids[dim](index3);
@@ -504,6 +507,10 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
             }
 
             accum_weighted_vel += weight * vel;
+            if (apic) {
+              resulting_C +=
+                  4.0f * weight * glm::outerProduct((unit_vel * vel), diff);
+            }
           }
         }
       }
@@ -512,6 +519,7 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
     }
 
     particle.velocity = resulting_vel;
+    particle.C = resulting_C;
 
     particles[id] = particle;
   }
@@ -545,6 +553,79 @@ void FluidCore::Update(float delta_time) {
   }
 }
 
+__global__ void NaiveParticle2GridKernel(Particle *particles,
+                                         int num_particle,
+                                         MACGridView<float> vel,
+                                         MACGridView<float> vel_weight,
+                                         GridView<float> level_set) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < num_particle) {
+    auto particle = particles[id];
+    for (int dim = 0; dim < 3; dim++) {
+      auto &vel_comp = vel.grids[dim];
+      auto grid_pos = vel_comp.Header().World2Grid(particle.position);
+      auto i_grid_pos = glm::ivec3(grid_pos);
+      for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+          for (int dz = -1; dz <= 1; dz++) {
+            auto index3 = i_grid_pos + glm::ivec3{dx, dy, dz};
+            auto diff = glm::vec3(index3) - grid_pos;
+            auto weight = KernelFunction(diff);
+            if (weight > 0.0f) {
+              if (vel_comp.LegalIndex(index3)) {
+                atomicAdd(&vel_comp(index3), weight * (particle.velocity +
+                                                       particle.C * diff)[dim]);
+                atomicAdd(&vel_weight.grids[dim](index3), weight);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    {
+      auto grid_pos = level_set.Header().World2Grid(particle.position);
+      auto i_grid_pos = glm::ivec3(grid_pos);
+      for (int dx = -1; dx <= 1; dx++) {
+        for (int dy = -1; dy <= 1; dy++) {
+          for (int dz = -1; dz <= 1; dz++) {
+            auto index3 = i_grid_pos + glm::ivec3{dx, dy, dz};
+            auto diff = glm::vec3(index3) - grid_pos;
+            auto dist = glm::length(diff);
+            if (dist < 1.0f) {
+              if (level_set.LegalIndex(index3)) {
+                atomicAdd(&level_set(index3), (1.0f - dist) * 2.0f);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+__global__ void NaiveParticle2GridPostProcessKernel(
+    MACGridView<float> vel,
+    MACGridView<float> vel_weight,
+    MACGridView<bool> valid_sample,
+    GridView<float> level_set) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  for (int dim = 0; dim < 3; dim++) {
+    if (id < vel.grids[dim].Header().TotalCells()) {
+      if (vel_weight.grids[dim][id] > 0.0f) {
+        vel.grids[dim][id] /= vel_weight.grids[dim][id];
+        valid_sample.grids[dim][id] = true;
+      } else {
+        valid_sample.grids[dim][id] = false;
+      }
+    }
+  }
+
+  if (id < level_set.Header().TotalCells()) {
+    level_set[id] = min(level_set[id], 1.0f);
+  }
+}
+
 void FluidCore::SubStep(float delta_time) {
   printf("substep: %f ms\n", delta_time);
   DeviceClock device_clock;
@@ -565,36 +646,56 @@ void FluidCore::SubStep(float delta_time) {
       glm::vec3{0.0f, -9.8f, 0.0f});
   device_clock.Record("Apply Gravity");
 
-  thrust::device_vector<int32_t> cell_indices(particles_.size());
-  AssignCellIndicesKernel<<<CALL_SHAPE(particles_.size())>>>(
-      particles_.data().get(), grid_cell_header_, cell_indices.data().get(),
-      particles_.size());
+  if (sim_settings_.sorting_p2g) {
+    // Sorting P2G pipeline
+    thrust::device_vector<int32_t> cell_indices(particles_.size());
+    AssignCellIndicesKernel<<<CALL_SHAPE(particles_.size())>>>(
+        particles_.data().get(), grid_cell_header_, cell_indices.data().get(),
+        particles_.size());
 
-  device_clock.Record("Assign Cell Index");
+    device_clock.Record("Assign Cell Index");
 
-  thrust::sort_by_key(cell_indices.begin(), cell_indices.end(),
-                      particles_.begin());
-  device_clock.Record("Sort Particles");
+    thrust::sort_by_key(cell_indices.begin(), cell_indices.end(),
+                        particles_.begin());
+    device_clock.Record("Sort Particles");
 
-  thrust::device_vector<int> lower_bound_indices(
-      grid_cell_header_.TotalCells() + 1);
+    thrust::device_vector<int> lower_bound_indices(
+        grid_cell_header_.TotalCells() + 1);
 
-  BinarySearchBoundsKernel<<<CALL_SHAPE(grid_cell_header_.TotalCells() + 1)>>>(
-      cell_indices.data().get(), particles_.size(),
-      lower_bound_indices.data().get(), grid_cell_header_.TotalCells());
+    BinarySearchBoundsKernel<<<CALL_SHAPE(grid_cell_header_.TotalCells() +
+                                          1)>>>(
+        cell_indices.data().get(), particles_.size(),
+        lower_bound_indices.data().get(), grid_cell_header_.TotalCells());
 
-  device_clock.Record("Binary Search Bounds");
+    device_clock.Record("Binary Search Bounds");
 
-  ConstructLevelSetKernel<<<CALL_SHAPE(grid_cell_header_.TotalCells())>>>(
-      particles_.data().get(), lower_bound_indices.data().get(),
-      grid_center_header_, level_set_.Buffer().get());
-  device_clock.Record("Construct Level Set");
+    ConstructLevelSetKernel<<<CALL_SHAPE(grid_cell_header_.TotalCells())>>>(
+        particles_.data().get(), lower_bound_indices.data().get(),
+        grid_center_header_, level_set_.Buffer().get());
+    device_clock.Record("Construct Level Set");
 
-  Particle2GridTransferKernel<<<CALL_SHAPE(grid_point_header_.TotalCells())>>>(
-      particles_.data().get(), lower_bound_indices.data().get(),
-      grid_center_header_, grid_point_header_, velocity_.View(),
-      transfer_weight_.View(), valid_sample_.View());
-  device_clock.Record("Particle 2 Grid Transfer");
+    Particle2GridTransferKernel<<<CALL_SHAPE(
+        grid_point_header_.TotalCells())>>>(
+        particles_.data().get(), lower_bound_indices.data().get(),
+        grid_center_header_, grid_point_header_, velocity_.View(),
+        transfer_weight_.View(), valid_sample_.View());
+    device_clock.Record("Particle 2 Grid Transfer");
+  } else {
+    NaiveParticle2GridKernel<<<CALL_SHAPE(particles_.size())>>>(
+        particles_.data().get(), particles_.size(), velocity_.View(),
+        transfer_weight_.View(), level_set_.View());
+    device_clock.Record("Naive Particle 2 Grid Transfer");
+
+    NaiveParticle2GridPostProcessKernel<<<CALL_SHAPE(
+        std::max(std::max(velocity_.View().grids[0].Header().TotalCells(),
+                          velocity_.View().grids[1].Header().TotalCells()),
+                 std::max(velocity_.View().grids[2].Header().TotalCells(),
+                          level_set_.Header().TotalCells())))>>>(
+        velocity_.View(), transfer_weight_.View(), valid_sample_.View(),
+        level_set_.View());
+
+    device_clock.Record("Naive Particle 2 Grid Transfer Post Process");
+  }
 
   velocity_bak_ = velocity_;
   valid_sample_bak_ = valid_sample_;
@@ -630,11 +731,11 @@ void FluidCore::SubStep(float delta_time) {
 
   //    ConjugateGradient(operator_, b_, pressure_);
 
-  Jacobi(operator_, b_, pressure_, 30);
+  //  Jacobi(operator_, b_, pressure_, 30);
 
-  //  MultiGrid(operator_, b_, pressure_, 30);
+  //    MultiGrid(operator_, b_, pressure_, 30);
 
-  //    MultiGridPCG(operator_, b_, pressure_);
+  MultiGridPCG(operator_, b_, pressure_);
 
   device_clock.Record("Solve Poisson Equation");
 
@@ -670,21 +771,18 @@ void FluidCore::SubStep(float delta_time) {
   device_clock.Record("Velocity Extrapolate (Post Solve)");
 
   Grid2ParticleTransferKernel<<<CALL_SHAPE(particles_.size())>>>(
-      particles_.data().get(), velocity_.View(), mass_sample_.View(),
-      valid_sample_.View(),
-      sim_settings_.rho * sim_settings_.delta_x * sim_settings_.delta_x *
-          sim_settings_.delta_x,
-      particles_.size());
+      particles_.data().get(), velocity_.View(), valid_sample_.View(),
+      particles_.size(), sim_settings_.apic);
 
   device_clock.Record("Grid 2 Particle Transfer");
 
   device_clock.Finish();
 
-  //    level_set_.StoreAsSheet("level_set.csv");
+  //      level_set_.StoreAsSheet("level_set.csv");
   //
-  //    velocity_.UGrid().StoreAsSheet("velocity_u.csv");
-  //    velocity_.VGrid().StoreAsSheet("velocity_v.csv");
-  //    velocity_.WGrid().StoreAsSheet("velocity_w.csv");
+  //      velocity_.UGrid().StoreAsSheet("velocity_u.csv");
+  //      velocity_.VGrid().StoreAsSheet("velocity_v.csv");
+  //      velocity_.WGrid().StoreAsSheet("velocity_w.csv");
   //
   //    mass_sample_.UGrid().StoreAsSheet("mass_sample_u.csv");
   //    mass_sample_.VGrid().StoreAsSheet("mass_sample_v.csv");
@@ -694,7 +792,7 @@ void FluidCore::SubStep(float delta_time) {
   //    operator_.adjacent_info.StoreAsSheet("adjacent_info.csv");
   //
   //    pressure_.StoreAsSheet("pressure.csv");
-  //    std::system("pause");
+  //      std::system("pause");
 }
 
 __global__ void PoissonOperatorKernel(GridView<AdjacentInfo> adjacent_infos,

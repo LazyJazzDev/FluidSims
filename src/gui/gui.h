@@ -8,18 +8,18 @@
 #include "thread"
 
 struct GUISettings {
-  float particle_radius{0.005f};
+  float particle_radius{0.003f};
   std::function<bool(const glm::vec3 &)> initial_particle_range =
       [](const glm::vec3 &p) {
         //      return p.x > 0.05f && p.x < 0.95f && p.y > 0.05f && p.y < 0.95f
         //      &&
         //             p.z > 0.05f && p.z < 0.95f;
-        return glm::length(p - glm::vec3{0.3, 0.8f, 0.3f}) < 0.1f ||
+        return glm::length(p - glm::vec3{0.5, 0.5f, 0.5f}) < 0.05f ||
                (p.x > 0.05f && p.x < 0.95f && p.y > 0.05f && p.y < 0.4f &&
-                p.z > 0.05f && p.z < 0.95f);
+                ((p.z > 0.05f && p.z < 0.55f) || (p.z > 0.45f && p.z < 0.95f)));
       };
   bool multithreaded{false};
-  float render_delta_t{0.03f};
+  float render_delta_t{0.03f / 20.0f};
   int initial_type = 1;  // 0 aligned, 1 random
 };
 
