@@ -5,9 +5,9 @@
 struct SimSettings {
   glm::ivec3 grid_size{100};
   float delta_x{1.0f / 100.0f};
-  float delta_t{1.5e-3f};
+  float delta_t{0.003f};
   float rho{1.0f};
-  bool alternative_time_step{false};
+  bool alternative_time_step{true};
   bool apic{true};
   bool sorting_p2g{true};
 };

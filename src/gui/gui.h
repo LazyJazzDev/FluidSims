@@ -14,12 +14,12 @@ struct GUISettings {
         //      return p.x > 0.05f && p.x < 0.95f && p.y > 0.05f && p.y < 0.95f
         //      &&
         //             p.z > 0.05f && p.z < 0.95f;
-        return glm::length(p - glm::vec3{0.5, 0.5f, 0.5f}) < 0.05f ||
+        return glm::length(p - glm::vec3{0.5, 0.9f, 0.5f}) < 0.05f ||
                (p.x > 0.05f && p.x < 0.95f && p.y > 0.05f && p.y < 0.4f &&
                 ((p.z > 0.05f && p.z < 0.55f) || (p.z > 0.45f && p.z < 0.95f)));
       };
   bool multithreaded{false};
-  float render_delta_t{0.03f / 20.0f};
+  float render_delta_t{0.03f};
   int initial_type = 1;  // 0 aligned, 1 random
 };
 
