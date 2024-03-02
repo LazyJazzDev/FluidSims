@@ -509,7 +509,7 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
             accum_weighted_vel += weight * vel;
             if (apic) {
               resulting_C +=
-                  4.0f * weight * glm::outerProduct((unit_vel * vel), diff);
+                  3.9f * weight * glm::outerProduct((unit_vel * vel), diff);
             }
           }
         }
@@ -793,6 +793,39 @@ void FluidCore::SubStep(float delta_time) {
   //
   //    pressure_.StoreAsSheet("pressure.csv");
   //      std::system("pause");
+}
+
+void FluidCore::SetCube(const glm::vec3 &position,
+                        float size,
+                        const glm::mat3 &rotation,
+                        float mass) {
+  rigid_info_.velocity_ = glm::vec3{0.0f};
+  rigid_info_.rotation_ = rotation;
+  rigid_info_.scale_ = size;
+  rigid_info_.inertia_ = glm::mat3{0.4f * mass * size * size};
+  rigid_info_.mass_ = mass;
+  rigid_info_.offset_ = position;
+  rigid_info_.angular_velocity_ = glm::vec3{0.0f};
+}
+
+glm::mat4 FluidCore::GetCube() const {
+  auto R = rigid_info_.rotation_ * rigid_info_.scale_;
+  return glm::mat4{R[0][0],
+                   R[0][1],
+                   R[0][2],
+                   0.0f,
+                   R[1][0],
+                   R[1][1],
+                   R[1][2],
+                   0.0f,
+                   R[2][0],
+                   R[2][1],
+                   R[2][2],
+                   0.0f,
+                   rigid_info_.offset_.x,
+                   rigid_info_.offset_.y,
+                   rigid_info_.offset_.z,
+                   1.0f};
 }
 
 __global__ void PoissonOperatorKernel(GridView<AdjacentInfo> adjacent_infos,

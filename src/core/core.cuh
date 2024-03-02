@@ -63,6 +63,16 @@ struct FluidOperator : public JacobiOp, public MultiGridPCGOp {
   std::vector<MultiGridLevel> MultiGridLevels(int iterations) override;
 };
 
+struct RigidInfo {
+  float scale_{0.0f};
+  float mass_{1.0f};
+  glm::mat3 inertia_{1.0f};
+  glm::mat3 rotation_{1.0f};
+  glm::vec3 offset_{0.0f};
+  glm::vec3 velocity_{0.0f};
+  glm::vec3 angular_velocity_{0.0f};
+};
+
 class FluidCore : public FluidInterface {
  public:
   explicit FluidCore(SimSettings sim_settings);
@@ -70,6 +80,13 @@ class FluidCore : public FluidInterface {
   void SetParticles(const std::vector<glm::vec3> &positions) override;
 
   [[nodiscard]] std::vector<glm::vec3> GetParticles() const override;
+
+  void SetCube(const glm::vec3 &position,
+               float size,
+               const glm::mat3 &rotation,
+               float mass) override;
+
+  glm::mat4 GetCube() const override;
 
   void Update(float delta_time) override;
 
@@ -97,4 +114,6 @@ class FluidCore : public FluidInterface {
   MACGrid<bool> valid_sample_bak_;
 
   thrust::device_vector<Particle> particles_;
+
+  RigidInfo rigid_info_;
 };

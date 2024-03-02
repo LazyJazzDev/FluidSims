@@ -16,6 +16,13 @@ GUIApp::GUIApp(const AppSettings &settings,
   GameX::Base::AssetProbe::PublicInstance()->AddSearchPath(FLUID_ASSETS_DIR);
 
   container_model_ = Renderer()->CreateStaticModel("model/container.obj");
+  cube_mesh_ = GameX::Graphics::Mesh("models/cube.obj");
+
+  for (auto &vertex : cube_mesh_.Vertices()) {
+    vertex.color = glm::vec3{0.8f, 0.7f, 0.6f};
+  }
+
+  cube_model_ = Renderer()->CreateStaticModel(cube_mesh_);
 
   particle_model_ = Renderer()->CreateStaticModel("models/sphere.obj");
   envmap_image_ = Renderer()->CreateImage("textures/envmap.hdr");
@@ -50,6 +57,9 @@ void GUIApp::OnInit() {
   entity_ = scene_->CreateEntity(container_model_.get());
   entity_->SetAffineMatrix(glm::translate(glm::mat4(1.0f), glm::vec3{0.05f}) *
                            glm::scale(glm::mat4(1.0f), glm::vec3{0.9f}));
+
+  cube_entity_ = scene_->CreateEntity(cube_model_.get());
+  cube_entity_->SetAffineMatrix(glm::mat4{1.0f});
 
   auto extent = VkCore()->SwapChain()->Extent();
   float aspect =
@@ -103,6 +113,8 @@ void GUIApp::OnInit() {
   if (gui_settings_.multithreaded) {
     logic_thread_ = std::thread(&GUIApp::LogicThread, this);
   }
+
+  instance_->SetCube(glm::vec3{0.5f, 0.5f, 0.5f}, 0.1f);
 }
 
 void GUIApp::OnUpdate() {
@@ -133,6 +145,7 @@ void GUIApp::OnUpdate() {
                      });
 
       color_particle_group_->SetParticleInfo(particle_infos);
+      cube_entity_->SetAffineMatrix(instance_->GetCube());
       particle_updated_ = false;
       update_resource_cv_.notify_one();
     }

@@ -16,6 +16,13 @@ class FluidInterface {
  public:
   virtual void SetParticles(const std::vector<glm::vec3> &particles) = 0;
   [[nodiscard]] virtual std::vector<glm::vec3> GetParticles() const = 0;
+
+  virtual void SetCube(const glm::vec3 &position,
+                       float size = 1.0f,
+                       const glm::mat3 &rotation = glm::mat3{1.0f},
+                       float mass = 1.0f) = 0;
+  virtual glm::mat4 GetCube() const = 0;
+
   virtual void Update(float delta_time) = 0;
 };
 

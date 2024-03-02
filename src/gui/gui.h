@@ -55,11 +55,14 @@ class GUIApp : public GameX::Base::Application {
   GameX::Graphics::UImage envmap_image_;
   GameX::Graphics::UStaticModel particle_model_;
   GameX::Graphics::UStaticModel container_model_;
+  GameX::Graphics::Mesh cube_mesh_;
+  GameX::Graphics::UStaticModel cube_model_;
   GameX::Graphics::UAmbientLight ambient_light_;
   GameX::Graphics::UDirectionalLight directional_light_;
   GameX::Graphics::UCamera camera_;
   GameX::Graphics::UFilm film_;
   GameX::Graphics::UEntity entity_;
+  GameX::Graphics::UEntity cube_entity_;
   std::unique_ptr<GameX::Graphics::ColorParticleGroup> color_particle_group_;
 
   float camera_distance_{3.0f};
