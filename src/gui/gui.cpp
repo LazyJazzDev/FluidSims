@@ -114,7 +114,10 @@ void GUIApp::OnInit() {
     logic_thread_ = std::thread(&GUIApp::LogicThread, this);
   }
 
-  instance_->SetCube(glm::vec3{0.5f, 0.5f, 0.5f}, 0.1f);
+  instance_->SetCube(glm::vec3{0.5f, -0.5f, 0.5f}, 0.5f,
+                     glm::mat3{glm::rotate(glm::mat4{1.0f}, glm::radians(45.0f),
+                                           glm::vec3{0.0f, 0.0f, 1.0f})},
+                     1.0f, glm::vec3{0.0f, 1.0f, 0.0f}, glm::vec3{0.0f});
 }
 
 void GUIApp::OnUpdate() {

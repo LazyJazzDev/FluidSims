@@ -3,6 +3,7 @@
 #include "core/core.cuh"
 #include "core/device_clock.cuh"
 #include "core/linear_solvers.cuh"
+#include "glm/gtc/matrix_transform.hpp"
 
 __device__ float KernelFunction(float v) {
   auto len = abs(v);
@@ -41,11 +42,11 @@ FluidCore::FluidCore(SimSettings sim_settings)
   velocity_ = MACGrid<float>(grid_cell_header_);
   transfer_weight_ = MACGrid<float>(grid_cell_header_);
   velocity_bak_ = MACGrid<float>(grid_cell_header_);
-  transfer_weight_bak_ = MACGrid<float>(grid_cell_header_);
   valid_sample_ = MACGrid<bool>(grid_cell_header_);
   valid_sample_bak_ = MACGrid<bool>(grid_cell_header_);
 
-  mass_sample_ = MACGrid<float>(grid_cell_header_);
+  fluid_mass_ = MACGrid<float>(grid_cell_header_);
+  rigid_volume_ = MACGrid<float>(grid_cell_header_);
 }
 
 __global__ void SetParticlesKernel(Particle *particles,
@@ -287,6 +288,14 @@ __device__ __host__ bool InsideObstacle(const glm::vec3 &pos) {
            pos.z > 0.05f && pos.z < 0.95f);
 }
 
+__device__ __host__ bool InsideRigidCube(const RigidInfo &rigid_info,
+                                         const glm::vec3 &pos) {
+  auto T_inv = glm::inverse(rigid_info.GetAffineMatrix());
+  auto p_local = T_inv * glm::vec4{pos, 1.0f};
+  return p_local.x >= -0.5f && p_local.x <= 0.5f && p_local.y >= -0.5f &&
+         p_local.y <= 0.5f && p_local.z >= -0.5f && p_local.z <= 0.5f;
+}
+
 __device__ __host__ void UpdateSurfaceInfo(const glm::vec3 &pos,
                                            const glm::vec4 &plane,
                                            float &dist,
@@ -310,9 +319,10 @@ __device__ __host__ glm::vec3 NearestSurfaceNormal(const glm::vec3 &pos) {
   return normal;
 }
 
-__global__ void CalculateMassSampleKernel(GridView<float> mass_sample,
-                                          float rho,
-                                          float delta_x) {
+__global__ void SampleFluidMassKernel(GridView<float> mass_sample,
+                                      float rho,
+                                      float delta_x,
+                                      RigidInfo rigid_info) {
   int id = blockIdx.x * blockDim.x + threadIdx.x;
   if (id < mass_sample.Header().TotalCells()) {
     auto index3 = mass_sample.Header().Index(id);
@@ -329,7 +339,8 @@ __global__ void CalculateMassSampleKernel(GridView<float> mass_sample,
               glm::vec3{index3} +
               ((glm::vec3{dx, dy, dz} + 0.5f) * inv_precision - 0.5f);
           glm::vec3 world_pos = mass_sample.Header().Grid2World(pos);
-          if (!InsideObstacle(world_pos)) {
+          if (!InsideObstacle(world_pos) &&
+              !InsideRigidCube(rigid_info, world_pos)) {
             fluid_sample++;
           }
           total_sample++;
@@ -339,6 +350,38 @@ __global__ void CalculateMassSampleKernel(GridView<float> mass_sample,
 
     mass_sample[id] = rho * delta_x * delta_x * delta_x * float(fluid_sample) /
                       float(total_sample);
+  }
+}
+
+__global__ void SampleRigidVolumeKernel(GridView<float> rigid_volume,
+                                        RigidInfo rigid_info,
+                                        float delta_x) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < rigid_volume.Header().TotalCells()) {
+    auto index3 = rigid_volume.Header().Index(id);
+    int precision = 10;
+    float inv_precision = 1.0f / float(precision);
+
+    int rigid_sample = 0;
+    int total_sample = 0;
+
+    for (int dx = 0; dx < precision; dx++) {
+      for (int dy = 0; dy < precision; dy++) {
+        for (int dz = 0; dz < precision; dz++) {
+          glm::vec3 pos =
+              glm::vec3{index3} +
+              ((glm::vec3{dx, dy, dz} + 0.5f) * inv_precision - 0.5f);
+          glm::vec3 world_pos = rigid_volume.Header().Grid2World(pos);
+          if (InsideRigidCube(rigid_info, world_pos)) {
+            rigid_sample++;
+          }
+          total_sample++;
+        }
+      }
+    }
+
+    rigid_volume[id] =
+        delta_x * delta_x * delta_x * float(rigid_sample) / float(total_sample);
   }
 }
 
@@ -407,6 +450,48 @@ __global__ void PreparePoissonEquationKernel(
   }
 }
 
+__global__ void PrepareRigidMatrixKernel(GridView<Eigen::Vector<float, 6>> J,
+                                         GridView<AdjacentInfo> adjacent_infos,
+                                         MACGridView<float> rigid_volume,
+                                         MACGridView<float> fluid_mass,
+                                         float delta_x,
+                                         RigidInfo rigid_info) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < J.Header().TotalCells()) {
+    auto index3 = J.Header().Index(id);
+
+    float total_adjacent_fluid_mass = 0.0f;
+    Eigen::Vector<float, 6> J_local{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    for (int dim = 0; dim < 3; dim++) {
+      int dim_nxt = (dim + 1) % 3;
+      int dim_prev = (dim + 2) % 3;
+      for (int edge = 0; edge < 2; edge++) {
+        glm::ivec3 offset{0};
+        offset[dim] = edge;
+        glm::ivec3 mac_index = index3 + offset;
+        glm::vec3 mac_world_pos =
+            rigid_volume.grids[dim].Header().Grid2World(mac_index) -
+            rigid_info.offset_;
+        float volume = rigid_volume.grids[dim](mac_index);
+        total_adjacent_fluid_mass += fluid_mass.grids[dim](mac_index);
+        if (volume > 0.0f) {
+          float sig = edge ? -1.0f : 1.0f;
+          J_local[dim] -= sig * volume / delta_x;
+          J_local[3 + dim_nxt] -=
+              sig * mac_world_pos[dim_prev] * volume / delta_x;
+          J_local[3 + dim_prev] +=
+              sig * mac_world_pos[dim_nxt] * volume / delta_x;
+        }
+      }
+    }
+    if (total_adjacent_fluid_mass < 1e-10f ||
+        adjacent_infos[id].local < 1e-10f) {
+      J_local = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    J[id] = J_local;
+  }
+}
+
 __device__ void CalculateAirPressure(float level_set_fluid,
                                      float level_set_air,
                                      float fluid_pressure,
@@ -467,6 +552,7 @@ __global__ void MixVelocityFieldKernel(GridView<float> vel_field,
 __global__ void Grid2ParticleTransferKernel(Particle *particles,
                                             MACGridView<float> vel_field,
                                             MACGridView<bool> valid_sample,
+                                            RigidInfo rigid_info,
                                             int num_particle,
                                             bool apic) {
   int id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -498,9 +584,15 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
             if (weight > 0.0f) {
               if (valid_sample.grids[dim].LegalIndex(index3)) {
                 vel = vel_field.grids[dim](index3);
-                if (!valid_sample.grids[dim](index3) ||
-                    InsideObstacle(
+                if (InsideRigidCube(
+                        rigid_info,
                         vel_field.grids[dim].Header().Grid2World(index3))) {
+                  vel = rigid_info.LinearVelocity(
+                      vel_field.grids[dim].Header().Grid2World(index3))[dim];
+                } else if (!valid_sample.grids[dim](index3) ||
+                           InsideObstacle(
+                               vel_field.grids[dim].Header().Grid2World(
+                                   index3))) {
                   vel = 0.0f;
                 }
               }
@@ -626,6 +718,26 @@ __global__ void NaiveParticle2GridPostProcessKernel(
   }
 }
 
+template <class Ty, int Size>
+class EigenDotOp {
+ public:
+  __host__ __device__ Ty operator()(const Eigen::Vector<Ty, Size> &a,
+                                    const Eigen::Vector<Ty, Size> &b) {
+    return a.dot(b);
+  }
+};
+
+template <class Ty, int Size>
+class EigenDotScalarOp {
+ public:
+  EigenDotScalarOp(const Eigen::Vector<Ty, Size> &scalar) : scalar_(scalar) {
+  }
+  __host__ __device__ Ty operator()(const Eigen::Vector<Ty, Size> &a) {
+    return a.dot(scalar_);
+  }
+  Eigen::Vector<Ty, Size> scalar_;
+};
+
 void FluidCore::SubStep(float delta_time) {
   printf("substep: %f ms\n", delta_time);
   DeviceClock device_clock;
@@ -634,16 +746,29 @@ void FluidCore::SubStep(float delta_time) {
   level_set_.Clear(-1.0f);
   velocity_.Clear();
   transfer_weight_.Clear();
-  mass_sample_.Clear();
+  fluid_mass_.Clear();
   device_clock.Record("Clear");
 
   AdvectionKernel<<<CALL_SHAPE(particles_.size())>>>(
       particles_.data().get(), particles_.size(), delta_time);
+
+  auto theta = glm::length(rigid_info_.angular_velocity_);
+
+  if (theta > 1e-8f) {
+    rigid_info_.rotation_ *=
+        glm::mat3{glm::rotate(glm::mat4{1.0f}, theta * delta_time,
+                              rigid_info_.angular_velocity_ / theta)};
+  }
+
+  rigid_info_.offset_ += rigid_info_.velocity_ * delta_time;
+
   device_clock.Record("Advection");
 
   ApplyGravityKernel<<<CALL_SHAPE(particles_.size())>>>(
-      particles_.data().get(), particles_.size(), delta_time,
-      glm::vec3{0.0f, -9.8f, 0.0f});
+      particles_.data().get(), particles_.size(), delta_time, gravity_);
+
+  //  rigid_info_.velocity_ += gravity_ * delta_time;
+
   device_clock.Record("Apply Gravity");
 
   if (sim_settings_.sorting_p2g) {
@@ -710,24 +835,67 @@ void FluidCore::SubStep(float delta_time) {
 
   device_clock.Record("Velocity Extrapolate");
 
-  CalculateMassSampleKernel<<<CALL_SHAPE(
-      mass_sample_.UGrid().Header().TotalCells())>>>(
-      mass_sample_.UView(), sim_settings_.rho, sim_settings_.delta_x);
-  CalculateMassSampleKernel<<<CALL_SHAPE(
-      mass_sample_.VGrid().Header().TotalCells())>>>(
-      mass_sample_.VView(), sim_settings_.rho, sim_settings_.delta_x);
-  CalculateMassSampleKernel<<<CALL_SHAPE(
-      mass_sample_.WGrid().Header().TotalCells())>>>(
-      mass_sample_.WView(), sim_settings_.rho, sim_settings_.delta_x);
+  SampleFluidMassKernel<<<CALL_SHAPE(
+      fluid_mass_.UGrid().Header().TotalCells())>>>(
+      fluid_mass_.UView(), sim_settings_.rho, sim_settings_.delta_x,
+      rigid_info_);
+  SampleFluidMassKernel<<<CALL_SHAPE(
+      fluid_mass_.VGrid().Header().TotalCells())>>>(
+      fluid_mass_.VView(), sim_settings_.rho, sim_settings_.delta_x,
+      rigid_info_);
+  SampleFluidMassKernel<<<CALL_SHAPE(
+      fluid_mass_.WGrid().Header().TotalCells())>>>(
+      fluid_mass_.WView(), sim_settings_.rho, sim_settings_.delta_x,
+      rigid_info_);
 
-  device_clock.Record("Calculate Mass Sample");
+  device_clock.Record("Sample Fluid Mass");
+
+  SampleRigidVolumeKernel<<<CALL_SHAPE(
+      rigid_volume_.UGrid().Header().TotalCells())>>>(
+      rigid_volume_.UView(), rigid_info_, sim_settings_.delta_x);
+  SampleRigidVolumeKernel<<<CALL_SHAPE(
+      rigid_volume_.VGrid().Header().TotalCells())>>>(
+      rigid_volume_.VView(), rigid_info_, sim_settings_.delta_x);
+  SampleRigidVolumeKernel<<<CALL_SHAPE(
+      rigid_volume_.WGrid().Header().TotalCells())>>>(
+      rigid_volume_.WView(), rigid_info_, sim_settings_.delta_x);
+
+  device_clock.Record("Sample Rigid Volume");
 
   PreparePoissonEquationKernel<<<CALL_SHAPE(grid_cell_header_.TotalCells())>>>(
-      mass_sample_.View(), velocity_.View(), level_set_.View(), delta_time,
+      fluid_mass_.View(), velocity_.View(), level_set_.View(), delta_time,
       sim_settings_.rho, sim_settings_.delta_x, operator_.adjacent_info.View(),
       b_.View());
 
   device_clock.Record("Prepare Poisson Equation");
+
+  PrepareRigidMatrixKernel<<<CALL_SHAPE(
+      operator_.rigid_J.Header().TotalCells())>>>(
+      operator_.rigid_J.View(), operator_.adjacent_info.View(),
+      rigid_volume_.View(), fluid_mass_.View(), sim_settings_.delta_x,
+      rigid_info_);
+
+  device_clock.Record("Prepare Rigid Matrix");
+
+  Eigen::Vector<float, 6> V{
+      rigid_info_.velocity_.x,         rigid_info_.velocity_.y,
+      rigid_info_.velocity_.z,         rigid_info_.angular_velocity_.x,
+      rigid_info_.angular_velocity_.y, rigid_info_.angular_velocity_.z};
+
+  thrust::device_vector<float> b_rigid(operator_.rigid_J.Header().TotalCells(),
+                                       0.0f);
+
+  std::cout << "V = " << V << std::endl;
+
+  thrust::transform(
+      operator_.rigid_J.Buffer(),
+      operator_.rigid_J.Buffer() + operator_.rigid_J.Header().TotalCells(),
+      b_rigid.begin(), EigenDotScalarOp<float, 6>(-V));
+
+  thrust::transform(b_rigid.begin(), b_rigid.end(), b_.Buffer(), b_.Buffer(),
+                    thrust::plus<float>());
+
+  device_clock.Record("Add Rigid Term to Right Side");
 
   //    ConjugateGradient(operator_, b_, pressure_);
 
@@ -772,7 +940,7 @@ void FluidCore::SubStep(float delta_time) {
 
   Grid2ParticleTransferKernel<<<CALL_SHAPE(particles_.size())>>>(
       particles_.data().get(), velocity_.View(), valid_sample_.View(),
-      particles_.size(), sim_settings_.apic);
+      rigid_info_, particles_.size(), sim_settings_.apic);
 
   device_clock.Record("Grid 2 Particle Transfer");
 
@@ -798,34 +966,20 @@ void FluidCore::SubStep(float delta_time) {
 void FluidCore::SetCube(const glm::vec3 &position,
                         float size,
                         const glm::mat3 &rotation,
-                        float mass) {
-  rigid_info_.velocity_ = glm::vec3{0.0f};
+                        float mass,
+                        const glm::vec3 &velocity,
+                        const glm::vec3 &angular_velocity) {
+  rigid_info_.velocity_ = velocity;
   rigid_info_.rotation_ = rotation;
   rigid_info_.scale_ = size;
-  rigid_info_.inertia_ = glm::mat3{0.4f * mass * size * size};
+  rigid_info_.inertia_ = glm::mat3{(1.0f / 6.0f) * mass * size * size};
   rigid_info_.mass_ = mass;
   rigid_info_.offset_ = position;
-  rigid_info_.angular_velocity_ = glm::vec3{0.0f};
+  rigid_info_.angular_velocity_ = angular_velocity;
 }
 
 glm::mat4 FluidCore::GetCube() const {
-  auto R = rigid_info_.rotation_ * rigid_info_.scale_;
-  return glm::mat4{R[0][0],
-                   R[0][1],
-                   R[0][2],
-                   0.0f,
-                   R[1][0],
-                   R[1][1],
-                   R[1][2],
-                   0.0f,
-                   R[2][0],
-                   R[2][1],
-                   R[2][2],
-                   0.0f,
-                   rigid_info_.offset_.x,
-                   rigid_info_.offset_.y,
-                   rigid_info_.offset_.z,
-                   1.0f};
+  return rigid_info_.GetAffineMatrix();
 }
 
 __global__ void PoissonOperatorKernel(GridView<AdjacentInfo> adjacent_infos,

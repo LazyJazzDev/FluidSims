@@ -3,8 +3,8 @@
 #include "vector"
 
 struct SimSettings {
-  glm::ivec3 grid_size{100};
-  float delta_x{1.0f / 100.0f};
+  glm::ivec3 grid_size{80};
+  float delta_x{1.0f / 80.0f};
   float delta_t{0.003f};
   float rho{1.0f};
   bool alternative_time_step{true};
@@ -20,7 +20,9 @@ class FluidInterface {
   virtual void SetCube(const glm::vec3 &position,
                        float size = 1.0f,
                        const glm::mat3 &rotation = glm::mat3{1.0f},
-                       float mass = 1.0f) = 0;
+                       float mass = 1.0f,
+                       const glm::vec3 &velocity = glm::vec3{0.0f},
+                       const glm::vec3 &angular_velocity = glm::vec3{0.0f}) = 0;
   virtual glm::mat4 GetCube() const = 0;
 
   virtual void Update(float delta_time) = 0;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Eigen/Eigen"
 #include "core/grids.cuh"
 #include "core/interface.h"
 #include "core/linear_solvers.cuh"
@@ -48,11 +49,14 @@ struct AdjacentOp : public LinearOp, public JacobiOp {
 struct FluidOperator : public JacobiOp, public MultiGridPCGOp {
   FluidOperator(GridHeader center_header = GridHeader{}) {
     adjacent_info = Grid<AdjacentInfo>(center_header);
+    rigid_J = Grid<Eigen::Vector<float, 6>>(center_header);
   }
 
   Grid<AdjacentInfo> adjacent_info;
 
   std::vector<Grid<AdjacentInfo>> down_sampled_adjacent_info;
+
+  Grid<Eigen::Vector<float, 6>> rigid_J;
 
   void operator()(VectorView<float> x, VectorView<float> y) override;
 
@@ -71,6 +75,18 @@ struct RigidInfo {
   glm::vec3 offset_{0.0f};
   glm::vec3 velocity_{0.0f};
   glm::vec3 angular_velocity_{0.0f};
+
+  __device__ __host__ glm::mat4 GetAffineMatrix() const {
+    auto R = rotation_ * scale_;
+    return glm::mat4{R[0][0],   R[0][1],   R[0][2],   0.0f,    R[1][0], R[1][1],
+                     R[1][2],   0.0f,      R[2][0],   R[2][1], R[2][2], 0.0f,
+                     offset_.x, offset_.y, offset_.z, 1.0f};
+  }
+
+  __device__ __host__ glm::vec3 LinearVelocity(
+      const glm::vec3 &position) const {
+    return velocity_ + glm::cross(angular_velocity_, position - offset_);
+  }
 };
 
 class FluidCore : public FluidInterface {
@@ -84,7 +100,9 @@ class FluidCore : public FluidInterface {
   void SetCube(const glm::vec3 &position,
                float size,
                const glm::mat3 &rotation,
-               float mass) override;
+               float mass,
+               const glm::vec3 &velocity = glm::vec3{0.0f},
+               const glm::vec3 &angular_velocity = glm::vec3{0.0f}) override;
 
   glm::mat4 GetCube() const override;
 
@@ -106,14 +124,15 @@ class FluidCore : public FluidInterface {
   FluidOperator operator_;
 
   MACGrid<float> transfer_weight_;
-  MACGrid<float> transfer_weight_bak_;
   MACGrid<float> velocity_;
   MACGrid<float> velocity_bak_;
-  MACGrid<float> mass_sample_;
+  MACGrid<float> fluid_mass_;
+  MACGrid<float> rigid_volume_;
   MACGrid<bool> valid_sample_;
   MACGrid<bool> valid_sample_bak_;
 
   thrust::device_vector<Particle> particles_;
 
   RigidInfo rigid_info_;
+  glm::vec3 gravity_{0.0f, -9.8f, 0.0f};
 };
