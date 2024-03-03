@@ -135,6 +135,14 @@ class GridView {
     }
   }
 
+  Ty *Buffer() {
+    return buffer_;
+  }
+
+  const Ty *Buffer() const {
+    return buffer_;
+  }
+
  private:
   GridHeader header_;
   Ty *buffer_;

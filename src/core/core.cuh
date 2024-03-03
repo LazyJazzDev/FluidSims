@@ -46,6 +46,47 @@ struct AdjacentOp : public LinearOp, public JacobiOp {
   GridView<AdjacentInfo> adjacent_info;
 };
 
+struct ExtractDOp {
+  Eigen::Matrix<float, 6, 6> rigid_M;
+  explicit ExtractDOp(
+      Eigen::Matrix<float, 6, 6> rigid_M = Eigen::Matrix<float, 6, 6>{})
+      : rigid_M(std::move(rigid_M)) {
+  }
+  __device__ float operator()(const Eigen::Vector<float, 6> &v) const {
+    return v.dot(rigid_M * v);
+  }
+};
+
+struct RigidOp : public LinearOp, public JacobiOp {
+  RigidOp(Grid<Eigen::Vector<float, 6>> &grid,
+          const Eigen::Matrix<float, 6, 6> &rigid_M)
+      : RigidOp(grid.View(), rigid_M) {
+  }
+
+  RigidOp(GridView<Eigen::Vector<float, 6>> view,
+          const Eigen::Matrix<float, 6, 6> &rigid_M)
+      : rigid_J(std::move(view)), rigid_M(rigid_M) {
+    //      rigid_D = Grid<float>(rigid_J.Header());
+    //      thrust::transform(
+    //              thrust::device_pointer_cast(rigid_J.Buffer()),
+    //                thrust::device_pointer_cast(rigid_J.Buffer() +
+    //                rigid_J.Header().TotalCells()),
+    //                thrust::device_pointer_cast(rigid_D.Buffer()),
+    //                ExtractDOp(rigid_M)
+    //              );
+  }
+
+  void operator()(VectorView<float> x, VectorView<float> y) override;
+
+  void LU(VectorView<float> x, VectorView<float> y) override;
+
+  void D_inv(VectorView<float> x, VectorView<float> y) override;
+
+  GridView<Eigen::Vector<float, 6>> rigid_J;
+  Grid<float> rigid_D;
+  Eigen::Matrix<float, 6, 6> rigid_M;
+};
+
 struct FluidOperator : public JacobiOp, public MultiGridPCGOp {
   FluidOperator(GridHeader center_header = GridHeader{}) {
     adjacent_info = Grid<AdjacentInfo>(center_header);
@@ -57,6 +98,8 @@ struct FluidOperator : public JacobiOp, public MultiGridPCGOp {
   std::vector<Grid<AdjacentInfo>> down_sampled_adjacent_info;
 
   Grid<Eigen::Vector<float, 6>> rigid_J;
+
+  Eigen::Matrix<float, 6, 6> rigid_M;
 
   void operator()(VectorView<float> x, VectorView<float> y) override;
 
@@ -104,7 +147,7 @@ class FluidCore : public FluidInterface {
                const glm::vec3 &velocity = glm::vec3{0.0f},
                const glm::vec3 &angular_velocity = glm::vec3{0.0f}) override;
 
-  glm::mat4 GetCube() const override;
+  [[nodiscard]] glm::mat4 GetCube() const override;
 
   void Update(float delta_time) override;
 

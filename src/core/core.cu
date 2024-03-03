@@ -728,14 +728,26 @@ class EigenDotOp {
 };
 
 template <class Ty, int Size>
-class EigenDotScalarOp {
+class EigenDotConstantOp {
  public:
-  EigenDotScalarOp(const Eigen::Vector<Ty, Size> &scalar) : scalar_(scalar) {
+  EigenDotConstantOp(const Eigen::Vector<Ty, Size> &scalar) : scalar_(scalar) {
   }
-  __host__ __device__ Ty operator()(const Eigen::Vector<Ty, Size> &a) {
+
+  __host__ __device__ Ty operator()(const Eigen::Vector<Ty, Size> &a) const {
     return a.dot(scalar_);
   }
+
   Eigen::Vector<Ty, Size> scalar_;
+};
+
+template <class Ty, int Size>
+class EigenVectorMultiplyOp {
+ public:
+  __host__ __device__ Eigen::Vector<Ty, Size> operator()(
+      const Eigen::Vector<Ty, Size> &a,
+      Ty scalar) const {
+    return a * scalar;
+  }
 };
 
 void FluidCore::SubStep(float delta_time) {
@@ -767,7 +779,7 @@ void FluidCore::SubStep(float delta_time) {
   ApplyGravityKernel<<<CALL_SHAPE(particles_.size())>>>(
       particles_.data().get(), particles_.size(), delta_time, gravity_);
 
-  //  rigid_info_.velocity_ += gravity_ * delta_time;
+  rigid_info_.velocity_ += gravity_ * delta_time;
 
   device_clock.Record("Apply Gravity");
 
@@ -885,25 +897,43 @@ void FluidCore::SubStep(float delta_time) {
   thrust::device_vector<float> b_rigid(operator_.rigid_J.Header().TotalCells(),
                                        0.0f);
 
-  std::cout << "V = " << V << std::endl;
+  //    std::cout << "V = " << V << std::endl;
 
   thrust::transform(
       operator_.rigid_J.Buffer(),
       operator_.rigid_J.Buffer() + operator_.rigid_J.Header().TotalCells(),
-      b_rigid.begin(), EigenDotScalarOp<float, 6>(-V));
+      b_rigid.begin(), EigenDotConstantOp<float, 6>(-V));
 
   thrust::transform(b_rigid.begin(), b_rigid.end(), b_.Buffer(), b_.Buffer(),
                     thrust::plus<float>());
 
+  for (int i = 0; i < 6; i++) {
+    for (int j = 0; j < 6; j++) {
+      operator_.rigid_M(i, j) = 0.0f;
+    }
+  }
+
+  for (int i = 0; i < 3; i++) {
+    operator_.rigid_M(i, i) = rigid_info_.mass_;
+  }
+
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      operator_.rigid_M(i + 3, j + 3) = rigid_info_.inertia_[j][i];
+    }
+  }
+
+  operator_.rigid_M = delta_time * operator_.rigid_M.inverse();
+
   device_clock.Record("Add Rigid Term to Right Side");
 
-  //    ConjugateGradient(operator_, b_, pressure_);
+  ConjugateGradient(operator_, b_, pressure_);
 
   //  Jacobi(operator_, b_, pressure_, 30);
 
   //    MultiGrid(operator_, b_, pressure_, 30);
 
-  MultiGridPCG(operator_, b_, pressure_);
+  //    MultiGridPCG(operator_, b_, pressure_);
 
   device_clock.Record("Solve Poisson Equation");
 
@@ -937,6 +967,24 @@ void FluidCore::SubStep(float delta_time) {
   }
 
   device_clock.Record("Velocity Extrapolate (Post Solve)");
+
+  Grid<Eigen::Vector<float, 6>> buffer(operator_.rigid_J.Header());
+  thrust::transform(
+      operator_.rigid_J.Buffer(),
+      operator_.rigid_J.Buffer() + operator_.rigid_J.Header().TotalCells(),
+      pressure_.Buffer(), buffer.Buffer(), EigenVectorMultiplyOp<float, 6>());
+  Eigen::Vector<float, 6> res = Eigen::Vector<float, 6>::Zero();
+  res = thrust::reduce(buffer.Buffer(),
+                       buffer.Buffer() + buffer.Header().TotalCells(), res,
+                       thrust::plus<Eigen::Vector<float, 6>>());
+
+  Eigen::Vector<float, 6> V_delta = operator_.rigid_M * res;
+
+  rigid_info_.velocity_ += glm::vec3{V_delta[0], V_delta[1], V_delta[2]};
+  rigid_info_.angular_velocity_ +=
+      glm::vec3{V_delta[3], V_delta[4], V_delta[5]};
+
+  device_clock.Record("Rigid Update");
 
   Grid2ParticleTransferKernel<<<CALL_SHAPE(particles_.size())>>>(
       particles_.data().get(), velocity_.View(), valid_sample_.View(),
@@ -1063,6 +1111,9 @@ void AdjacentOp::D_inv(VectorView<float> x, VectorView<float> y) {
 
 void FluidOperator::operator()(VectorView<float> x, VectorView<float> y) {
   AdjacentOp{adjacent_info}(x, y);
+  Vector<float> buffer(rigid_J.Header().TotalCells(), 0.0f);
+  RigidOp{rigid_J, rigid_M}(x, buffer.View());
+  Add(y, buffer.View(), y);
 }
 
 void FluidOperator::LU(VectorView<float> x, VectorView<float> y) {
@@ -1191,4 +1242,42 @@ std::vector<MultiGridLevel> FluidOperator::MultiGridLevels(int iterations) {
   }
 
   return levels;
+}
+
+void RigidOp::operator()(VectorView<float> x, VectorView<float> y) {
+  Grid<Eigen::Vector<float, 6>> buffer(rigid_J.Header());
+
+  thrust::transform(thrust::device_pointer_cast(rigid_J.Buffer()),
+                    thrust::device_pointer_cast(rigid_J.Buffer()) +
+                        rigid_J.Header().TotalCells(),
+                    thrust::device_pointer_cast(x.buffer), buffer.Buffer(),
+                    EigenVectorMultiplyOp<float, 6>());
+
+  Eigen::Vector<float, 6> res = Eigen::Vector<float, 6>::Zero();
+
+  res = thrust::reduce(buffer.Buffer(),
+                       buffer.Buffer() + buffer.Header().TotalCells(), res,
+                       thrust::plus<Eigen::Vector<float, 6>>());
+
+  thrust::transform(thrust::device_pointer_cast(rigid_J.Buffer()),
+                    thrust::device_pointer_cast(rigid_J.Buffer()) +
+                        rigid_J.Header().TotalCells(),
+                    thrust::device_pointer_cast(y.buffer),
+                    EigenDotConstantOp<float, 6>(res));
+}
+
+__global__ void RigidOpLUKernel(float *x, float *D, float *y, int size) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < size) {
+    y[id] -= x[id] * D[id];
+  }
+}
+
+void RigidOp::LU(VectorView<float> x, VectorView<float> y) {
+  operator()(x, y);
+  RigidOpLUKernel<<<CALL_SHAPE(x.size)>>>(x.buffer, rigid_D.Buffer().get(),
+                                          y.buffer, x.size);
+}
+
+void RigidOp::D_inv(VectorView<float> x, VectorView<float> y) {
 }
