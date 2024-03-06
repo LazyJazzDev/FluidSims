@@ -87,6 +87,34 @@ class GridView {
     return buffer_[header_.Index(x, y, z)];
   }
 
+  __device__ Ty ConstrainedRetrieve(const glm::ivec3 &index) const {
+    auto clamped_index = glm::clamp(index, glm::ivec3(0), header_.size - 1);
+    return buffer_[header_.Index(clamped_index)];
+  }
+
+  __device__ Ty Interpolate(const glm::vec3 &pos) const {
+    auto grid_pos = header_.World2Grid(pos);
+    auto base = glm::floor(grid_pos);
+    auto weight = grid_pos - base;
+    auto base_i = glm::ivec3(base);
+    return ConstrainedRetrieve(base_i) * (1.0f - weight.x) * (1.0f - weight.y) *
+               (1.0f - weight.z) +
+           ConstrainedRetrieve(base_i + glm::ivec3(1, 0, 0)) * weight.x *
+               (1.0f - weight.y) * (1.0f - weight.z) +
+           ConstrainedRetrieve(base_i + glm::ivec3(0, 1, 0)) *
+               (1.0f - weight.x) * weight.y * (1.0f - weight.z) +
+           ConstrainedRetrieve(base_i + glm::ivec3(1, 1, 0)) * weight.x *
+               weight.y * (1.0f - weight.z) +
+           ConstrainedRetrieve(base_i + glm::ivec3(0, 0, 1)) *
+               (1.0f - weight.x) * (1.0f - weight.y) * weight.z +
+           ConstrainedRetrieve(base_i + glm::ivec3(1, 0, 1)) * weight.x *
+               (1.0f - weight.y) * weight.z +
+           ConstrainedRetrieve(base_i + glm::ivec3(0, 1, 1)) *
+               (1.0f - weight.x) * weight.y * weight.z +
+           ConstrainedRetrieve(base_i + glm::ivec3(1, 1, 1)) * weight.x *
+               weight.y * weight.z;
+  }
+
   __device__ __host__ bool LegalIndex(const glm::ivec3 &index) const {
     return index.x >= 0 && index.x < header_.size.x && index.y >= 0 &&
            index.y < header_.size.y && index.z >= 0 && index.z < header_.size.z;

@@ -319,6 +319,52 @@ __device__ __host__ glm::vec3 NearestSurfaceNormal(const glm::vec3 &pos) {
   return normal;
 }
 
+__device__ __host__ void UpdateNormalInfo(const glm::vec3 &pos,
+                                          const glm::vec4 &plane,
+                                          float &dist,
+                                          glm::vec3 &normal) {
+  auto d = glm::dot(glm::vec3{plane}, pos) + plane.w;
+  if (d < dist) {
+    dist = d;
+    normal = -glm::vec3{plane};
+  }
+}
+
+__device__ __host__ bool NearestRigidSurfaceNormal(const RigidInfo &rigid_info,
+                                                   const glm::vec3 &pos,
+                                                   glm::vec3 &normal,
+                                                   glm::vec3 &solid_vel) {
+  auto T = rigid_info.GetAffineMatrix();
+  auto T_inv = glm::inverse(T);
+  auto p_local = T_inv * glm::vec4{pos, 1.0f};
+  if (p_local.x > -0.5f && p_local.x < 0.5f && p_local.y > -0.5f &&
+      p_local.y < 0.5f && p_local.z > -0.5f && p_local.z < 0.5f) {
+    float dist = 1e10f;
+    UpdateNormalInfo(p_local, glm::vec4{1, 0, 0, 0.5f}, dist, normal);
+    UpdateNormalInfo(p_local, glm::vec4{-1, 0, 0, 0.5f}, dist, normal);
+    UpdateNormalInfo(p_local, glm::vec4{0, 1, 0, 0.5f}, dist, normal);
+    UpdateNormalInfo(p_local, glm::vec4{0, -1, 0, 0.5f}, dist, normal);
+    UpdateNormalInfo(p_local, glm::vec4{0, 0, 1, 0.5f}, dist, normal);
+    UpdateNormalInfo(p_local, glm::vec4{0, 0, -1, 0.5f}, dist, normal);
+    normal = glm::normalize(glm::transpose(glm::mat3{T_inv}) * normal);
+    solid_vel = rigid_info.LinearVelocity(pos);
+    return true;
+  }
+  return false;
+}
+
+__device__ __host__ bool NearestSolidSurfaceNormal(const RigidInfo &rigid_info,
+                                                   const glm::vec3 &pos,
+                                                   glm::vec3 &normal,
+                                                   glm::vec3 &solid_vel) {
+  if (InsideObstacle(pos)) {
+    normal = NearestSurfaceNormal(pos);
+    solid_vel = glm::vec3{0.0f};
+    return true;
+  }
+  return NearestRigidSurfaceNormal(rigid_info, pos, normal, solid_vel);
+}
+
 __global__ void SampleFluidMassKernel(GridView<float> mass_sample,
                                       float rho,
                                       float delta_x,
@@ -503,6 +549,7 @@ __device__ void CalculateAirPressure(float level_set_fluid,
 __global__ void UpdateVelocityFieldKernel(GridView<float> pressure,
                                           GridView<float> level_set,
                                           GridView<float> vel_field,
+                                          GridView<float> fluid_mass,
                                           GridView<bool> valid_sample,
                                           float delta_t,
                                           float rho,
@@ -520,7 +567,8 @@ __global__ void UpdateVelocityFieldKernel(GridView<float> pressure,
       auto upper_pressure = pressure(index3);
       auto lower_level_set = level_set(index3 + offset);
       auto upper_level_set = level_set(index3);
-      if (lower_level_set > 0.0f || upper_level_set > 0.0f) {
+      if ((lower_level_set > 0.0f || upper_level_set > 0.0f) &&
+          fluid_mass[id] > 1e-8f) {
         valid = true;
         if (upper_level_set <= 0.0f) {
           CalculateAirPressure(lower_level_set, upper_level_set, lower_pressure,
@@ -584,17 +632,18 @@ __global__ void Grid2ParticleTransferKernel(Particle *particles,
             if (weight > 0.0f) {
               if (valid_sample.grids[dim].LegalIndex(index3)) {
                 vel = vel_field.grids[dim](index3);
-                if (InsideRigidCube(
-                        rigid_info,
-                        vel_field.grids[dim].Header().Grid2World(index3))) {
-                  vel = rigid_info.LinearVelocity(
-                      vel_field.grids[dim].Header().Grid2World(index3))[dim];
-                } else if (!valid_sample.grids[dim](index3) ||
-                           InsideObstacle(
-                               vel_field.grids[dim].Header().Grid2World(
-                                   index3))) {
-                  vel = 0.0f;
-                }
+                //                if (InsideRigidCube(
+                //                        rigid_info,
+                //                        vel_field.grids[dim].Header().Grid2World(index3)))
+                //                        {
+                //                  vel = rigid_info.LinearVelocity(
+                //                      vel_field.grids[dim].Header().Grid2World(index3))[dim];
+                //                } else if (!valid_sample.grids[dim](index3) ||
+                //                           InsideObstacle(
+                //                               vel_field.grids[dim].Header().Grid2World(
+                //                                   index3))) {
+                //                  vel = 0.0f;
+                //                }
               }
             }
 
@@ -715,6 +764,28 @@ __global__ void NaiveParticle2GridPostProcessKernel(
 
   if (id < level_set.Header().TotalCells()) {
     level_set[id] = min(level_set[id], 1.0f);
+  }
+}
+
+__global__ void ConstrainNormalSpeed(GridView<float> vel,
+                                     MACGridView<float> old_vel,
+                                     RigidInfo rigid_info,
+                                     int dim) {
+  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  if (id < vel.Header().TotalCells()) {
+    auto index3 = vel.Header().Index(id);
+    auto pos = vel.Header().Grid2World(index3);
+    glm::vec3 normal;
+    glm::vec3 solid_vel;
+    bool res = NearestSolidSurfaceNormal(rigid_info, pos, normal, solid_vel);
+    if (res) {
+      glm::vec3 interpolated_vel = {old_vel.grids[0].Interpolate(pos),
+                                    old_vel.grids[1].Interpolate(pos),
+                                    old_vel.grids[2].Interpolate(pos)};
+      interpolated_vel -= glm::dot(interpolated_vel, normal) * normal;
+      interpolated_vel += glm::dot(solid_vel, normal) * normal;
+      vel[id] = interpolated_vel[dim];
+    }
   }
 }
 
@@ -940,17 +1011,17 @@ void FluidCore::SubStep(float delta_time) {
   UpdateVelocityFieldKernel<<<CALL_SHAPE(
       velocity_.UGrid().Header().TotalCells())>>>(
       pressure_.View(), level_set_.View(), velocity_.UView(),
-      valid_sample_.UView(), delta_time, sim_settings_.rho,
+      fluid_mass_.UView(), valid_sample_.UView(), delta_time, sim_settings_.rho,
       sim_settings_.delta_x, 0);
   UpdateVelocityFieldKernel<<<CALL_SHAPE(
       velocity_.VGrid().Header().TotalCells())>>>(
       pressure_.View(), level_set_.View(), velocity_.VView(),
-      valid_sample_.VView(), delta_time, sim_settings_.rho,
+      fluid_mass_.VView(), valid_sample_.VView(), delta_time, sim_settings_.rho,
       sim_settings_.delta_x, 1);
   UpdateVelocityFieldKernel<<<CALL_SHAPE(
       velocity_.WGrid().Header().TotalCells())>>>(
       pressure_.View(), level_set_.View(), velocity_.WView(),
-      valid_sample_.WView(), delta_time, sim_settings_.rho,
+      fluid_mass_.WView(), valid_sample_.WView(), delta_time, sim_settings_.rho,
       sim_settings_.delta_x, 2);
 
   device_clock.Record("Update Velocity Field");
@@ -985,6 +1056,16 @@ void FluidCore::SubStep(float delta_time) {
       glm::vec3{V_delta[3], V_delta[4], V_delta[5]};
 
   device_clock.Record("Rigid Update");
+
+  velocity_bak_ = velocity_;
+  ConstrainNormalSpeed<<<CALL_SHAPE(velocity_.UGrid().Header().TotalCells())>>>(
+      velocity_.UView(), velocity_bak_.View(), rigid_info_, 0);
+  ConstrainNormalSpeed<<<CALL_SHAPE(velocity_.VGrid().Header().TotalCells())>>>(
+      velocity_.VView(), velocity_bak_.View(), rigid_info_, 1);
+  ConstrainNormalSpeed<<<CALL_SHAPE(velocity_.WGrid().Header().TotalCells())>>>(
+      velocity_.WView(), velocity_bak_.View(), rigid_info_, 2);
+
+  device_clock.Record("Constrain Velocity");
 
   Grid2ParticleTransferKernel<<<CALL_SHAPE(particles_.size())>>>(
       particles_.data().get(), velocity_.View(), valid_sample_.View(),
